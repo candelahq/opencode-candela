@@ -12,6 +12,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { CandelaClient } from "./candela-client.js";
+import { discoverCandelaUrl } from "./discover.js";
 
 /** Format USD with appropriate precision */
 function formatCost(usd: number): string {
@@ -28,8 +29,7 @@ function formatTokens(count: number): string {
 }
 
 export const CandelaPlugin: Plugin = async ({ client, $ }) => {
-  const candelaUrl =
-    process.env.CANDELA_PROXY_URL || "http://localhost:8181";
+  const candelaUrl = discoverCandelaUrl();
   const candela = new CandelaClient(candelaUrl);
 
   // Check if Candela is alive on init
