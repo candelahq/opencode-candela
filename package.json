@@ -1,0 +1,38 @@
+{
+  "name": "opencode-candela",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for Candela — session tracking, cost toasts, and budget warnings for LLM observability",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "candela",
+    "llm",
+    "observability",
+    "cost-tracking",
+    "ai"
+  ],
+  "author": "Candela HQ",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/candelahq/opencode-candela.git"
+  },
+  "homepage": "https://candelahq.com",
+  "bugs": {
+    "url": "https://github.com/candelahq/opencode-candela/issues"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@types/node": "^25.8.0",
+    "typescript": "^5.8.0"
+  },
+  "files": [
+    "src/"
+  ]
+}
