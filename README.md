@@ -1,6 +1,6 @@
 # opencode-candela
 
-OpenCode plugin for [Candela](https://github.com/candelahq/candela) — session tracking, cost toasts, and budget warnings for LLM observability.
+OpenCode plugin for [Candela](https://github.com/candelahq/candela) — session tracking, cost toasts, rich budget warnings, and budget-aware session compaction.
 
 [![npm](https://img.shields.io/npm/v/opencode-candela)](https://www.npmjs.com/package/opencode-candela)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -12,11 +12,13 @@ When you use [OpenCode](https://opencode.ai/) with Candela running locally, this
 | Feature | Description |
 |---------|-------------|
 | **Session cost toasts** | Shows token usage and cost when a session goes idle |
-| **Budget warnings** | Alerts when you've used >80% of your budget |
+| **Rich budget warnings** | Daily spend, active grants, reset countdowns, color-coded urgency |
 | **Shell env injection** | Sets `CANDELA_PROXY_URL` and `OPENAI_BASE_URL` in all shells |
-| **Compaction context** | Injects cost awareness into session compaction summaries |
+| **Compaction context** | Injects current budget + grant state into session compaction summaries |
 
 If Candela is not running, the plugin gracefully no-ops — zero overhead.
+
+---
 
 ## Installation
 
@@ -43,22 +45,27 @@ mkdir -p ~/.config/opencode/plugins/opencode-candela
 cp -r node_modules/opencode-candela/src/* ~/.config/opencode/plugins/opencode-candela/
 ```
 
+---
+
 ## Prerequisites
 
-1. **Candela running locally**: `candela start` or `go run ./cmd/candela-server`
-2. **OpenCode installed**: `npm install -g opencode-ai`
+1. **Candela running locally** — `candela start` (requires [candela](https://github.com/candelahq/candela) v0.3.3+)
+2. **Authentication** — run `candela auth login` once to set up Google OAuth credentials (no `gcloud` CLI dependency)
+3. **OpenCode installed** — `npm install -g opencode-ai`
 
-The plugin auto-detects Candela on `localhost:8181` (default port). To use a custom URL:
+The plugin auto-detects Candela on `localhost:8181`. To use a custom URL:
 
 ```bash
 export CANDELA_PROXY_URL="http://localhost:9090"
 ```
 
+---
+
 ## How It Works
 
 ### Session Cost Toast
 
-When your OpenCode session goes idle (you stop typing), the plugin queries Candela's API and shows a macOS notification:
+When your OpenCode session goes idle, the plugin shows a summary:
 
 ```
 📊 142.3K tokens · $0.47 · 12 calls · 3m42s
@@ -66,10 +73,13 @@ When your OpenCode session goes idle (you stop typing), the plugin queries Cande
 
 ### Budget Warnings
 
-On startup and after each session, the plugin checks your budget:
+On startup and after each session, the plugin checks your full budget state:
 
 ```
-⚠️ Budget: $4.20 remaining (90% used)
+💰 Budget: $10.00 remaining (80% used)
+   Active grants: +$5.00 bonus (resets in 3d 14h)
+   Total remaining (waterfall): $15.00
+⚠️ Daily budget is running low!
 ```
 
 ### Shell Environment
@@ -83,13 +93,16 @@ echo $OPENAI_BASE_URL      # http://localhost:8181/proxy/openai/v1
 
 ### Compaction Context
 
-When OpenCode compacts a long session, cost context is preserved:
+When OpenCode compacts a long session, current budget and grant state is injected:
 
 > This session has used 142.3K tokens ($0.47) across 12 LLM calls.
 > Model breakdown:
 >   - claude-sonnet-4 (anthropic): 98.2K tokens, $0.31
 >   - gemini-2.5-pro (google): 44.1K tokens, $0.16
-> Budget remaining: $4.20 of $50.00 (92% used).
+> Daily budget: $10.00 remaining of $50.00 (80% used).
+> Active grants: +$5.00 bonus (resets in 3d 14h). Total remaining: $15.00.
+
+---
 
 ## Configuration
 
@@ -98,6 +111,8 @@ The plugin works with zero configuration. Optional env vars:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CANDELA_PROXY_URL` | `http://localhost:8181` | Candela server URL |
+
+---
 
 ## Combining with Candela Provider Config
 
@@ -134,12 +149,16 @@ For full integration, use this plugin alongside Candela providers in your `openc
 }
 ```
 
+---
+
 ## Related
 
 - [Candela](https://github.com/candelahq/candela) — OTel-native LLM observability platform
-- [Candela Desktop](https://github.com/candelahq/candela-desktop) — Flutter desktop app
-- [candela-cline](https://github.com/candelahq/candela-cline) — Cline plugin for Candela
-- [candela-vscode](https://github.com/candelahq/candela-vscode) — VS Code extension for Candela
+- [Candela Desktop](https://github.com/candelahq/candela-desktop) — Flutter macOS desktop app
+- [candela-cline](https://github.com/candelahq/candela-cline) — Cline plugin
+- [candela-vscode](https://github.com/candelahq/candela-vscode) — VS Code extension
+
+---
 
 ## License
 
