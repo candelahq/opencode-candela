@@ -49,7 +49,7 @@ cp -r node_modules/opencode-candela/src/* ~/.config/opencode/plugins/opencode-ca
 
 ## Prerequisites
 
-1. **Candela running locally** — `candela start` (requires [candela](https://github.com/candelahq/candela) v0.3.3+)
+1. **Candela running locally** — `candela start` (requires [candela](https://github.com/candelahq/candela) v0.4.6+)
 2. **Authentication** — run `candela auth login` once to set up Google OAuth credentials (no `gcloud` CLI dependency)
 3. **OpenCode installed** — `npm install -g opencode-ai`
 
