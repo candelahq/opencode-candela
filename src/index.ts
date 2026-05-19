@@ -3,15 +3,17 @@
  *
  * Hooks into OpenCode session lifecycle to provide:
  * - Session-scoped cost tracking with idle toasts
- * - Budget remaining warnings
+ * - Budget remaining warnings with reset countdown
+ * - Active grant display with expiry warnings
  * - Candela proxy URL injection into shells
- * - Cost context injection during session compaction
+ * - Rich cost + budget context injection during session compaction
  *
  * Gracefully no-ops if Candela is not running.
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { CandelaClient } from "./candela-client.js";
+import type { BudgetInfo, GrantInfo } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
 
 /** Format USD with appropriate precision */
@@ -28,6 +30,29 @@ function formatTokens(count: number): string {
   return String(count);
 }
 
+/** Budget urgency emoji based on usage fraction. */
+function budgetEmoji(fraction: number): string {
+  if (fraction >= 0.9) return "🔴";
+  if (fraction >= 0.6) return "🟡";
+  return "🟢";
+}
+
+/** Format a grant for display: "🎁 $42.10 remaining (Hackathon — expires May 20)" */
+function formatGrant(g: GrantInfo): string {
+  const parts = [`🎁 ${formatCost(g.remainingUsd)} remaining`];
+  if (g.reason) parts.push(`(${g.reason}`);
+  if (g.expiresAt) {
+    const expiry = g.expiresAt.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    parts.push(g.reason ? ` — expires ${expiry})` : `(expires ${expiry})`);
+  } else if (g.reason) {
+    parts.push(")");
+  }
+  return parts.join("");
+}
+
 export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const candelaUrl = discoverCandelaUrl();
   const candela = new CandelaClient(candelaUrl);
@@ -35,22 +60,39 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   // Check if Candela is alive on init
   const alive = await candela.isAlive();
   if (alive) {
+    // Single call to get usage + budget + grants
+    const data = await candela.getDashboardData(24);
+
+    const connectMsg = `Connected to Candela at ${candelaUrl}`;
     await client.app.log({
       body: {
         service: "opencode-candela",
         level: "info",
-        message: `Connected to Candela at ${candelaUrl}`,
+        message: connectMsg,
       },
     });
 
-    // Check budget on startup — warn if low
-    const budget = await candela.getBudgetRemaining();
-    if (budget && budget.percentUsed > 80) {
+    // Show budget status on startup
+    if (data?.budget) {
+      const b = data.budget;
+      const emoji = budgetEmoji(b.usedFraction);
       await client.app.log({
         body: {
           service: "opencode-candela",
-          level: "warn",
-          message: `⚠️ Budget ${budget.percentUsed.toFixed(0)}% used (${formatCost(budget.remainingUsd)} remaining)`,
+          level: b.isNearLimit ? "warn" : "info",
+          message: `${emoji} Budget: ${b.percentUsed.toFixed(0)}% used — ${formatCost(b.remainingUsd)} remaining${b.resetLabel ? ` (${b.resetLabel})` : ""}`,
+        },
+      });
+    }
+
+    // Show active grants on startup
+    for (const g of data?.activeGrants ?? []) {
+      if (g.isExhausted) continue;
+      await client.app.log({
+        body: {
+          service: "opencode-candela",
+          level: g.isExpiringSoon ? "warn" : "info",
+          message: formatGrant(g),
         },
       });
     }
@@ -86,31 +128,39 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     event: async ({ event }) => {
       if (!alive) return;
 
-      // Track session start
+      // Track session start — clear cache for fresh data
       if (event.type === "session.created") {
         sessionStartTime = new Date();
         sessionToolCalls = 0;
-        // Reset health check in case Candela was started mid-use
         candela.resetHealth();
+        candela.invalidateCache();
       }
 
-      // Show cost summary when session goes idle
+      // Show cost + budget summary when session goes idle
       if (event.type === "session.idle" && sessionStartTime) {
-        const usage = await candela.getUsageSummary(1); // last hour
-        if (usage && usage.requestCount > 0) {
+        const data = await candela.getDashboardData(1); // last hour
+        if (data && data.usage.requestCount > 0) {
           const duration = Math.round(
             (Date.now() - sessionStartTime.getTime()) / 1000
           );
           const minutes = Math.floor(duration / 60);
           const seconds = duration % 60;
 
-          // Send notification via osascript on macOS
-          const summary = [
-            `${formatTokens(usage.totalTokens)} tokens`,
-            formatCost(usage.totalCostUsd),
-            `${usage.requestCount} calls`,
+          // Build summary with budget context
+          const parts = [
+            `${formatTokens(data.usage.totalTokens)} tokens`,
+            formatCost(data.usage.totalCostUsd),
+            `${data.usage.requestCount} calls`,
             `${minutes}m${seconds}s`,
-          ].join(" · ");
+          ];
+
+          // Add budget indicator if available
+          if (data.budget) {
+            const emoji = budgetEmoji(data.budget.usedFraction);
+            parts.push(`${emoji}${data.budget.percentUsed.toFixed(0)}%`);
+          }
+
+          const summary = parts.join(" · ");
 
           try {
             await $`osascript -e ${"display notification \"" + summary + "\" with title \"Candela\" subtitle \"Session Summary\""}`;
@@ -126,17 +176,18 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           }
         }
 
-        // Check budget after session
-        const budget = await candela.getBudgetRemaining();
-        if (budget && budget.percentUsed > 90) {
+        // Budget warning toast (separate notification for visibility)
+        if (data?.budget && data.budget.percentUsed > 90) {
+          const b = data.budget;
+          const budgetMsg = `${formatCost(b.remainingUsd)} remaining (${b.percentUsed.toFixed(0)}% used)${b.resetLabel ? ` — ${b.resetLabel}` : ""}`;
           try {
-            await $`osascript -e ${"display notification \"" + formatCost(budget.remainingUsd) + " remaining (" + budget.percentUsed.toFixed(0) + "% used)\" with title \"Candela\" subtitle \"⚠️ Budget Warning\""}`;
+            await $`osascript -e ${"display notification \"" + budgetMsg + "\" with title \"Candela\" subtitle \"⚠️ Budget Warning\""}`;
           } catch {
             await client.app.log({
               body: {
                 service: "opencode-candela",
                 level: "warn",
-                message: `⚠️ Budget: ${formatCost(budget.remainingUsd)} remaining (${budget.percentUsed.toFixed(0)}% used)`,
+                message: `⚠️ Budget: ${budgetMsg}`,
               },
             });
           }
@@ -152,16 +203,17 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     },
 
     /**
-     * Inject cost context into compaction summaries so the LLM
-     * retains awareness of how much the session has cost.
+     * Inject cost + budget context into compaction summaries so the LLM
+     * retains awareness of spending and budget constraints.
      */
     "experimental.session.compacting": async (_input, output) => {
       if (!alive) return;
 
-      const usage = await candela.getUsageSummary(4); // last 4 hours
-      if (usage && usage.requestCount > 0) {
-        const breakdown = await candela.getModelBreakdown(4);
-        const modelLines = (breakdown ?? [])
+      const data = await candela.getDashboardData(4); // last 4 hours
+      if (data && data.usage.requestCount > 0) {
+        // Model breakdown (from dedicated endpoint for full detail)
+        const models = data.models.length > 0 ? data.models : (await candela.getModelBreakdown(4) ?? []);
+        const modelLines = models
           .slice(0, 5)
           .map(
             (m) =>
@@ -169,21 +221,45 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           )
           .join("\n");
 
-        output.context.push(
-          `## Candela Cost Context\n` +
-            `This session has used ${formatTokens(usage.totalTokens)} tokens ` +
-            `(${formatCost(usage.totalCostUsd)}) across ${usage.requestCount} LLM calls.\n` +
-            `${modelLines ? `\nModel breakdown:\n${modelLines}` : ""}\n` +
-            `Be mindful of token usage — prefer concise responses when possible.`
-        );
-      }
+        const sections: string[] = [
+          `## Candela Cost Context`,
+          `This session has used ${formatTokens(data.usage.totalTokens)} tokens ` +
+            `(${formatCost(data.usage.totalCostUsd)}) across ${data.usage.requestCount} LLM calls.`,
+        ];
 
-      const budget = await candela.getBudgetRemaining();
-      if (budget && budget.remainingUsd > 0) {
-        output.context.push(
-          `Budget remaining: ${formatCost(budget.remainingUsd)} of ${formatCost(budget.totalBudgetUsd)} ` +
-            `(${budget.percentUsed.toFixed(0)}% used).`
+        if (modelLines) {
+          sections.push(`\nModel breakdown:\n${modelLines}`);
+        }
+
+        // Budget context — rich data for the LLM to pace itself
+        if (data.budget) {
+          const b = data.budget;
+          sections.push(
+            `\n## Candela Budget Context`,
+            `Daily budget: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} (${b.percentUsed.toFixed(0)}% used${b.resetLabel ? `, ${b.resetLabel}` : ""})`,
+          );
+        }
+
+        // Grant context
+        for (const g of data.activeGrants) {
+          if (g.isExhausted) continue;
+          const expiryNote = g.expiresAt
+            ? ` — expires ${g.expiresAt.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+            : "";
+          sections.push(
+            `Active grant: ${formatCost(g.remainingUsd)} of ${formatCost(g.amountUsd)} (${g.reason || "Bonus"}${expiryNote})`
+          );
+        }
+
+        if (data.totalRemainingUsd !== null) {
+          sections.push(`Total available: ${formatCost(data.totalRemainingUsd)}`);
+        }
+
+        sections.push(
+          `Be cost-conscious — ${data.budget?.resetLabel ? `daily budget ${data.budget.resetLabel}.` : "prefer concise responses when possible."}`
         );
+
+        output.context.push(sections.join("\n"));
       }
     },
   };
