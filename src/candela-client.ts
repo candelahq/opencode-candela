@@ -94,10 +94,12 @@ function parseBudget(raw: Record<string, unknown>): BudgetInfo | null {
   if (!raw) return null;
   const limitUsd = Number(raw.limitUsd ?? raw.limit_usd ?? 0);
   const spentUsd = Number(raw.spentUsd ?? raw.spent_usd ?? 0);
+  if (!isFinite(limitUsd) || !isFinite(spentUsd)) return null;
   const remaining = Math.max(0, limitUsd - spentUsd);
   const fraction = limitUsd > 0 ? Math.min(1, spentUsd / limitUsd) : 0;
   const periodEndRaw = (raw.periodEnd ?? raw.period_end) as string | undefined;
   const periodEnd = periodEndRaw ? new Date(periodEndRaw) : null;
+  if (periodEnd && isNaN(periodEnd.getTime())) return null;
 
   return {
     limitUsd,
@@ -131,6 +133,7 @@ function parseGrants(raw: unknown[]): GrantInfo[] {
         expiresAt,
         isExpiringSoon:
           expiresAt !== null &&
+          expiresAt.getTime() > Date.now() &&
           expiresAt.getTime() - Date.now() < 7 * 86_400_000,
         isExhausted: spentUsd >= amountUsd,
       };
@@ -140,13 +143,33 @@ function parseGrants(raw: unknown[]): GrantInfo[] {
 /** Build a ConnectRPC TimeRange JSON body for the given hours window. */
 function makeTimeRange(hours: number): Record<string, unknown> {
   const now = new Date();
-  const start = new Date(now.getTime() - hours * 3_600_000);
+  const start = new Date(now.getTime() - hours * 60 * 60 * 1000);
   return {
     time_range: {
       start: { seconds: String(Math.floor(start.getTime() / 1000)), nanos: 0 },
       end: { seconds: String(Math.floor(now.getTime() / 1000)), nanos: 0 },
     },
   };
+}
+
+/** Parse raw proto3 JSON model array into ModelUsage[]. */
+function parseModels(raw: unknown[]): ModelUsage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((m): m is Record<string, unknown> => m != null && typeof m === "object")
+    .map((m) => ({
+      model: String(m.model ?? ""),
+      provider: String(m.provider ?? ""),
+      totalTokens:
+        Number(m.inputTokens ?? m.input_tokens ?? 0) +
+        Number(m.outputTokens ?? m.output_tokens ?? 0),
+      totalCostUsd: Number(m.costUsd ?? m.cost_usd ?? 0),
+      requestCount: Number(m.callCount ?? m.call_count ?? 0),
+      cacheReadTokens: Number(m.cacheReadTokens ?? m.cache_read_tokens ?? 0),
+      cacheCreationTokens: Number(
+        m.cacheCreationTokens ?? m.cache_creation_tokens ?? 0
+      ),
+    }));
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -243,19 +266,7 @@ export class CandelaClient {
       );
       if (!res.ok) return null;
       const data = await res.json();
-      return (data.models ?? []).map((m: Record<string, unknown>) => ({
-        model: String(m.model ?? ""),
-        provider: String(m.provider ?? ""),
-        totalTokens:
-          Number(m.inputTokens ?? m.input_tokens ?? 0) +
-          Number(m.outputTokens ?? m.output_tokens ?? 0),
-        totalCostUsd: Number(m.costUsd ?? m.cost_usd ?? 0),
-        requestCount: Number(m.callCount ?? m.call_count ?? 0),
-        cacheReadTokens: Number(m.cacheReadTokens ?? m.cache_read_tokens ?? 0),
-        cacheCreationTokens: Number(
-          m.cacheCreationTokens ?? m.cache_creation_tokens ?? 0
-        ),
-      }));
+      return parseModels(data.models ?? []);
     } catch {
       return null;
     }
@@ -297,23 +308,7 @@ export class CandelaClient {
       };
 
       // Parse models
-      const models: ModelUsage[] = (data.models ?? []).map(
-        (m: Record<string, unknown>) => ({
-          model: String(m.model ?? ""),
-          provider: String(m.provider ?? ""),
-          totalTokens:
-            Number(m.inputTokens ?? m.input_tokens ?? 0) +
-            Number(m.outputTokens ?? m.output_tokens ?? 0),
-          totalCostUsd: Number(m.costUsd ?? m.cost_usd ?? 0),
-          requestCount: Number(m.callCount ?? m.call_count ?? 0),
-          cacheReadTokens: Number(
-            m.cacheReadTokens ?? m.cache_read_tokens ?? 0
-          ),
-          cacheCreationTokens: Number(
-            m.cacheCreationTokens ?? m.cache_creation_tokens ?? 0
-          ),
-        })
-      );
+      const models = parseModels(data.models ?? []);
 
       // Parse budget context
       const bc = data.budgetContext ?? data.budget_context;

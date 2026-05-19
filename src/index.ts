@@ -42,7 +42,7 @@ function formatGrant(g: GrantInfo): string {
   const parts = [`🎁 ${formatCost(g.remainingUsd)} remaining`];
   if (g.reason) parts.push(`(${g.reason}`);
   if (g.expiresAt) {
-    const expiry = g.expiresAt.toLocaleDateString("en-US", {
+    const expiry = g.expiresAt.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
     });
@@ -212,8 +212,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       const data = await candela.getDashboardData(4); // last 4 hours
       if (data && data.usage.requestCount > 0) {
         // Model breakdown (from dedicated endpoint for full detail)
-        const breakdown = await candela.getModelBreakdown(4);
-        const modelLines = (breakdown ?? data.models)
+        const models = data.models.length > 0 ? data.models : (await candela.getModelBreakdown(4) ?? []);
+        const modelLines = models
           .slice(0, 5)
           .map(
             (m) =>
@@ -244,7 +244,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         for (const g of data.activeGrants) {
           if (g.isExhausted) continue;
           const expiryNote = g.expiresAt
-            ? ` — expires ${g.expiresAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+            ? ` — expires ${g.expiresAt.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
             : "";
           sections.push(
             `Active grant: ${formatCost(g.remainingUsd)} of ${formatCost(g.amountUsd)} (${g.reason || "Bonus"}${expiryNote})`
