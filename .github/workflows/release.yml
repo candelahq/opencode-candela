@@ -30,12 +30,69 @@ jobs:
       - name: Verify package
         run: npm pack --dry-run
 
+      - name: Check NPM_TOKEN is set
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is not set. Go to Settings → Secrets → Actions and add NPM_TOKEN."
+            echo "::error::Generate a token at https://www.npmjs.com/settings/austinatapache/tokens"
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Validate NPM_TOKEN
+        id: validate_token
+        run: |
+          if ! npm whoami 2>/dev/null; then
+            echo "npm_valid=false" >> "$GITHUB_OUTPUT"
+            echo "::error::NPM_TOKEN is invalid or expired."
+            echo "::error::Regenerate at https://www.npmjs.com/settings/austinatapache/tokens"
+            echo "::error::Then update the secret at https://github.com/${{ github.repository }}/settings/secrets/actions"
+          else
+            echo "npm_valid=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Authenticated as $(npm whoami)"
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish to npm
+        if: steps.validate_token.outputs.npm_valid == 'true'
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
+        if: steps.validate_token.outputs.npm_valid == 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+
+      - name: Comment on failure (token issue)
+        if: steps.validate_token.outputs.npm_valid == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const body = [
+              `## ❌ Release ${tag} failed — NPM token issue`,
+              '',
+              'The `NPM_TOKEN` secret is **invalid or expired**.',
+              '',
+              '### Fix:',
+              '1. Generate a new token at [npmjs.com/settings/austinatapache/tokens](https://www.npmjs.com/settings/austinatapache/tokens)',
+              '   - Type: **Granular Access Token**',
+              '   - Permissions: **Read and Write**',
+              '   - 2FA bypass: **Enabled**',
+              `2. Update the secret at [${context.repo.repo} → Settings → Secrets](https://github.com/${context.repo.owner}/${context.repo.repo}/settings/secrets/actions)`,
+              '3. Re-run this workflow or push a new tag.',
+            ].join('\n');
+
+            // Post as a commit comment on the tagged commit
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body,
+            });
+
+            core.setFailed('NPM_TOKEN is invalid or expired. See commit comment for fix instructions.');
