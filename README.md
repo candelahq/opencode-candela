@@ -141,6 +141,8 @@ For full integration, use this plugin alongside Candela providers in your `openc
         "baseURL": "http://localhost:8181/proxy/gemini-oai/v1"
       },
       "models": {
+        "gemini-3.5-pro": { "name": "Gemini 3.5 Pro" },
+        "gemini-3.5-flash": { "name": "Gemini 3.5 Flash" },
         "gemini-2.5-pro": { "name": "Gemini 2.5 Pro" },
         "gemini-2.5-flash": { "name": "Gemini 2.5 Flash" }
       }
@@ -155,8 +157,8 @@ For full integration, use this plugin alongside Candela providers in your `openc
 
 - [Candela](https://github.com/candelahq/candela) — OTel-native LLM observability platform
 - [Candela Desktop](https://github.com/candelahq/candela-desktop) — Flutter macOS desktop app
-- [candela-cline](https://github.com/candelahq/candela-cline) — Cline plugin
-- [candela-vscode](https://github.com/candelahq/candela-vscode) — VS Code extension
+- [candela-cline](https://www.npmjs.com/package/candela-cline) — Cline plugin
+- [candela-vscode](https://open-vsx.org/extension/candelahq/candela-vscode) — VS Code extension
 
 ---
 
