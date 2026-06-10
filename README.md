@@ -162,6 +162,20 @@ For full integration, use this plugin alongside Candela providers in your `openc
 
 ---
 
+## Troubleshooting
+
+### OpenCode Hangs, Shows Stale Models, or Behaves Unexpectedly
+
+If OpenCode hangs, shows stale models, or behaves unexpectedly after config changes, delete the OpenCode database:
+
+```bash
+rm -rf ~/.local/share/opencode/opencode.db*
+```
+
+Then restart OpenCode. This clears cached state (model lists, provider connections, etc.) and forces a fresh sync.
+
+---
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
