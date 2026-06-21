@@ -1,6 +1,6 @@
 # opencode-candela
 
-OpenCode plugin for [Candela](https://github.com/candelahq/candela) — session tracking, cost toasts, rich budget warnings, and budget-aware session compaction.
+OpenCode plugin for [Candela](https://github.com/candelahq/candela) — session tracking, cost toasts, rich budget warnings, budget-aware session compaction, policy gates, and cost-aware model tuning.
 
 [![npm](https://img.shields.io/npm/v/opencode-candela)](https://www.npmjs.com/package/opencode-candela)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -15,6 +15,9 @@ When you use [OpenCode](https://opencode.ai/) with Candela running locally, this
 | **Rich budget warnings** | Daily spend, active grants, reset countdowns, color-coded urgency |
 | **Shell env injection** | Sets `CANDELA_PROXY_URL` and `OPENAI_BASE_URL` in all shells |
 | **Compaction context** | Injects current budget + grant state into session compaction summaries |
+| **Session attribution** | Tags every LLM request with `X-Candela-*` headers for per-session cost tracking |
+| **Cost-aware throttling** | Automatically limits output tokens and temperature when budget is running low |
+| **Policy gates** | Blocks destructive operations (sensitive file edits, dangerous shell commands) |
 
 If Candela is not running, the plugin gracefully no-ops — zero overhead.
 
@@ -111,8 +114,62 @@ The plugin works with zero configuration. Optional env vars:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CANDELA_PROXY_URL` | `http://localhost:8181` | Candela server URL |
+| `CANDELA_BLOCKED_PATTERNS` | *(none)* | Comma-separated file patterns to block (added to defaults) |
 
 ---
+
+## Policy Gates
+
+The plugin blocks destructive operations before they execute — similar to Factory Droid's `PreToolUse` hooks.
+
+### Blocked File Patterns
+
+By default, the agent cannot edit:
+- `pricing.yaml` / `pricing.json`
+- `.env` / `.env.production`
+
+Add project-specific patterns via environment variable:
+
+```bash
+export CANDELA_BLOCKED_PATTERNS="secrets.yaml,terraform.tfstate,production.config"
+```
+
+When blocked, the agent sees:
+```
+🛡️ Blocked by Candela policy: edits to files matching ".env" are not allowed.
+Edit this file manually and run tests.
+```
+
+### Blocked Shell Commands
+
+The agent cannot run commands containing:
+- `rm -rf /`
+- `DROP TABLE` / `DROP DATABASE` / `TRUNCATE TABLE`
+- `FORMAT C:`
+
+### Cost-Aware Throttling
+
+When budget usage exceeds thresholds, the plugin automatically adjusts LLM parameters:
+
+| Budget Used | Action |
+|---|---|
+| **>80%** | Reduces temperature to 0.4 for more focused responses |
+| **>95%** | Caps output to 2K tokens, reduces temperature to 0.2 |
+
+### Session Attribution Headers
+
+Every LLM request is tagged with:
+
+| Header | Value |
+|---|---|
+| `X-Candela-Session` | OpenCode session ID |
+| `X-Candela-Agent` | Agent name |
+| `X-Candela-Model` | `provider/model` |
+| `X-Candela-Source` | `opencode` |
+
+These enable per-session cost breakdowns in Candela's dashboard.
+
+
 
 ## Combining with Candela Provider Config
 
