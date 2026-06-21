@@ -10,14 +10,28 @@
  * - Session attribution headers for cost tracking (chat.headers)
  * - Cost-aware model parameter adjustment (chat.params)
  * - Deterministic policy gates blocking destructive operations (tool.execute.before)
+ * - Mission orchestration: structured plan → execute → validate → next (tools)
  *
  * Gracefully no-ops if Candela is not running.
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
+import { tool } from "@opencode-ai/plugin/tool";
 import { CandelaClient } from "./candela-client.js";
 import type { BudgetInfo, GrantInfo } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
+import {
+  readMissionStore,
+  writeMissionStore,
+  pruneMissions,
+  createMission,
+  getActiveMission,
+  getNextMilestone,
+  updateMilestone,
+  cancelMission,
+  formatMissionProgress,
+} from "./missions.js";
+import type { MissionStore } from "./types.js";
 
 /** Format USD with appropriate precision */
 function formatCost(usd: number): string {
@@ -113,6 +127,29 @@ export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
   let sessionStartTime: Date | null = null;
   let sessionToolCalls = 0;
 
+  // ── Mission init ──────────────────────────────────────────────────────
+  const missionStore = readMissionStore();
+  const { pruned } = pruneMissions(missionStore);
+  if (pruned > 0) {
+    await client.app.log({
+      body: {
+        service: "opencode-candela",
+        level: "debug",
+        message: `Pruned ${pruned} mission${pruned === 1 ? "" : "s"} older than 90 days`,
+      },
+    });
+  }
+  const activeMission = getActiveMission(missionStore);
+  if (activeMission) {
+    await client.app.log({
+      body: {
+        service: "opencode-candela",
+        level: "info",
+        message: `Active mission: ${activeMission.goal} (${activeMission.milestones.filter(m => m.status === "done").length}/${activeMission.milestones.length} milestones)`,
+      },
+    });
+  }
+
   // ── Policy configuration ─────────────────────────────────────────────────
   // Blocked file patterns (policy gates) — add project-specific patterns
   // via CANDELA_BLOCKED_PATTERNS env var (comma-separated globs).
@@ -159,6 +196,16 @@ export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
       output.headers["X-Candela-Model"] =
         `${input.provider.info.id}/${input.model.id}`;
       output.headers["X-Candela-Source"] = "opencode";
+
+      // Mission cost attribution (#5)
+      const mission = getActiveMission(missionStore);
+      if (mission) {
+        output.headers["X-Candela-Mission-Id"] = mission.id;
+        const working = mission.milestones.find((m) => m.status === "working");
+        if (working) {
+          output.headers["X-Candela-Milestone-Id"] = working.id;
+        }
+      }
     },
 
     /**
@@ -394,6 +441,337 @@ export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
 
         output.context.push(sections.join("\n"));
       }
+    },
+
+    /**
+     * Inject compact mission context into the system prompt so the LLM
+     * knows about active missions and available mission tools.
+     */
+    "experimental.chat.system.transform": async (_input, output) => {
+      const mission = getActiveMission(missionStore);
+      if (!mission) return;
+      output.system.push(
+        `## Active Mission\n${formatMissionProgress(mission)}\n\n` +
+          `Tools: mission_plan, mission_next, mission_validate, mission_status, mission_cancel`,
+      );
+    },
+
+    // ── Mission Tools (#4) ─────────────────────────────────────────────
+    tool: {
+      /**
+       * Decompose a goal into ordered milestones with success criteria.
+       */
+      mission_plan: tool({
+        description:
+          "Plan a mission by decomposing a goal into ordered milestones. " +
+          "Each milestone should have a clear title, description, and optionally " +
+          "a test command for validation and relevant file paths.",
+        args: {
+          goal: tool.schema.string().describe("The user's goal to accomplish"),
+          milestones: tool.schema
+            .array(
+              tool.schema.object({
+                title: tool.schema.string().describe("Short milestone title"),
+                description: tool.schema
+                  .string()
+                  .describe("What this milestone accomplishes"),
+                successCriteria: tool.schema
+                  .string()
+                  .optional()
+                  .describe("What done looks like"),
+                testCommand: tool.schema
+                  .string()
+                  .optional()
+                  .describe("Shell command to validate (e.g. go test ./...)"),
+                files: tool.schema
+                  .array(tool.schema.string())
+                  .optional()
+                  .describe("Relevant file paths"),
+              }),
+            )
+            .describe("Ordered list of milestones"),
+        },
+        async execute(args) {
+          // Check for existing active mission
+          const existing = getActiveMission(missionStore);
+          if (existing) {
+            return {
+              title: "Mission Already Active",
+              output:
+                `A mission is already active: "${existing.goal}"\n` +
+                `Use mission_cancel to cancel it first, or mission_status to check progress.`,
+            };
+          }
+
+          const mission = createMission(
+            missionStore,
+            args.goal,
+            args.milestones,
+          );
+
+          return {
+            title: `🎯 Mission Planned (${mission.milestones.length} milestones)`,
+            output: formatMissionProgress(mission) +
+              "\n\nUse mission_next to start the first milestone.",
+          };
+        },
+      }),
+
+      /**
+       * Execute the next pending milestone by spawning a child session.
+       */
+      mission_next: tool({
+        description:
+          "Execute the next pending milestone in the active mission. " +
+          "Spawns a focused child session with the Build agent.",
+        args: {},
+        async execute(_args, ctx) {
+          const mission = getActiveMission(missionStore);
+          if (!mission) {
+            return "No active mission. Use mission_plan first.";
+          }
+
+          const next = getNextMilestone(mission);
+          if (!next) {
+            return {
+              title: "✅ All Milestones Complete",
+              output: formatMissionProgress(mission),
+            };
+          }
+
+          // Mark as working
+          updateMilestone(missionStore, mission.id, next.id, {
+            status: "working",
+            startedAt: new Date().toISOString(),
+          });
+
+          // Spawn child session
+          try {
+            const session = await client.session.create({
+              body: {
+                parentID: ctx.sessionID,
+                title: `Mission: ${next.title}`,
+              },
+            });
+
+            const sessionId = session.data?.id;
+            if (!sessionId) {
+              throw new Error("session.create returned no ID");
+            }
+
+            // Record session ID on the milestone
+            updateMilestone(missionStore, mission.id, next.id, {
+              sessionId,
+            });
+
+            // Build a focused prompt for the worker
+            const promptParts = [
+              `## Milestone: ${next.title}`,
+              ``,
+              next.description,
+            ];
+            if (next.successCriteria) {
+              promptParts.push(``, `**Success criteria:** ${next.successCriteria}`);
+            }
+            if (next.files?.length) {
+              promptParts.push(``, `**Relevant files:** ${next.files.join(", ")}`);
+            }
+            if (next.testCommand) {
+              promptParts.push(
+                ``,
+                `**Validation:** When done, the following command should pass: \`${next.testCommand}\``,
+              );
+            }
+
+            // Send prompt (non-blocking via promptAsync)
+            await client.session.promptAsync({
+              path: { id: sessionId },
+              body: {
+                parts: [
+                  { type: "text", text: promptParts.join("\n") },
+                ],
+              },
+            });
+
+            return {
+              title: `▶ Started: ${next.title}`,
+              output:
+                `Worker session: ${sessionId}\n` +
+                `Agent: build\n` +
+                `\nThe worker is executing this milestone. ` +
+                `Use mission_validate to check results when ready.`,
+            };
+          } catch (err) {
+            // Revert milestone to pending on failure
+            updateMilestone(missionStore, mission.id, next.id, {
+              status: "pending",
+              startedAt: undefined,
+            });
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+              title: "❌ Failed to Start Milestone",
+              output: `Could not create worker session: ${msg}`,
+            };
+          }
+        },
+      }),
+
+      /**
+       * Validate a completed milestone by running its test command.
+       */
+      mission_validate: tool({
+        description:
+          "Validate a milestone by running its test command. " +
+          "If no test command is set, marks the milestone as done.",
+        args: {
+          milestoneId: tool.schema
+            .string()
+            .optional()
+            .describe(
+              "ID of the milestone to validate. If omitted, validates the first 'working' milestone.",
+            ),
+        },
+        async execute(args, ctx) {
+          const mission = getActiveMission(missionStore);
+          if (!mission) {
+            return "No active mission.";
+          }
+
+          // Find the milestone to validate
+          const ms = args.milestoneId
+            ? mission.milestones.find((m) => m.id === args.milestoneId)
+            : mission.milestones.find((m) => m.status === "working");
+
+          if (!ms) {
+            return "No milestone found to validate. Is one in 'working' status?";
+          }
+
+          // No test command — just mark as done
+          if (!ms.testCommand) {
+            updateMilestone(missionStore, mission.id, ms.id, {
+              status: "done",
+              testResult: "skip",
+              completedAt: new Date().toISOString(),
+            });
+            return {
+              title: `✅ ${ms.title}`,
+              output:
+                "No test command — marked as done.\n\n" +
+                formatMissionProgress(
+                  getActiveMission(missionStore) ?? mission,
+                ),
+            };
+          }
+
+          // Run test command via shell
+          // The testCommand was specified by the LLM during mission_plan and
+          // reviewed by the user as part of the mission plan approval.
+          updateMilestone(missionStore, mission.id, ms.id, {
+            status: "validating",
+          });
+
+          try {
+            const result = await $`${ms.testCommand}`.nothrow().quiet();
+
+            const exitCode = result.exitCode;
+            const output = result.text();
+            const passed = exitCode === 0;
+
+            updateMilestone(missionStore, mission.id, ms.id, {
+              status: passed ? "done" : "failed",
+              testResult: passed ? "pass" : "fail",
+              testOutput: output.slice(0, 2048),
+              completedAt: new Date().toISOString(),
+            });
+
+            const updated = getActiveMission(missionStore) ?? mission;
+            return {
+              title: passed ? `✅ ${ms.title}` : `❌ ${ms.title}`,
+              output:
+                (passed
+                  ? `Tests passed: \`${ms.testCommand}\`\n`
+                  : `Tests failed (exit ${exitCode}): \`${ms.testCommand}\`\n${output.slice(0, 500)}\n`) +
+                "\n" +
+                formatMissionProgress(updated),
+            };
+          } catch (err) {
+            // Shell execution failed entirely
+            updateMilestone(missionStore, mission.id, ms.id, {
+              status: "failed",
+              testResult: "fail",
+              testOutput:
+                err instanceof Error ? err.message : String(err),
+              completedAt: new Date().toISOString(),
+            });
+            return {
+              title: `❌ ${ms.title}`,
+              output: `Validation error: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            };
+          }
+        },
+      }),
+
+      /**
+       * Show current mission status.
+       */
+      mission_status: tool({
+        description:
+          "Show the current status of the active mission with milestone progress.",
+        args: {},
+        async execute() {
+          const mission = getActiveMission(missionStore);
+          if (!mission) {
+            return "No active mission. Use mission_plan to create one.";
+          }
+          return {
+            title: `🎯 ${mission.goal}`,
+            output: formatMissionProgress(mission),
+          };
+        },
+      }),
+
+      /**
+       * Cancel the active mission.
+       */
+      mission_cancel: tool({
+        description:
+          "Cancel the active mission. Any in-progress milestones will be " +
+          "skipped and running worker sessions will be aborted.",
+        args: {},
+        async execute() {
+          const mission = getActiveMission(missionStore);
+          if (!mission) {
+            return "No active mission to cancel.";
+          }
+
+          const { workingSessionIds } = cancelMission(
+            missionStore,
+            mission.id,
+          );
+
+          // Abort running child sessions
+          for (const sessionId of workingSessionIds) {
+            try {
+              await client.session.abort({
+                path: { id: sessionId },
+              });
+            } catch {
+              // Session may already be done — ignore
+            }
+          }
+
+          return {
+            title: "🚫 Mission Cancelled",
+            output:
+              `Cancelled: "${mission.goal}"\n` +
+              (workingSessionIds.length > 0
+                ? `Aborted ${workingSessionIds.length} worker session(s).`
+                : "No active workers."),
+          };
+        },
+      }),
     },
   };
 };
