@@ -1,21 +1,10 @@
 {
   "name": "opencode-candela",
   "version": "0.2.0",
-  "description": "OpenCode plugin for Candela — session tracking, cost toasts, budget warnings, and mission orchestration for LLM observability",
+  "description": "OpenCode plugin for Candela — session tracking, cost toasts, budget warnings, and per-task cost attribution for LLM observability",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "oc-plugin": ["server", "tui"],
-  "exports": {
-    "./server": {
-      "import": "./src/index.ts",
-      "types": "./src/index.ts"
-    },
-    "./tui": {
-      "import": "./src/tui.tsx",
-      "types": "./src/tui.tsx"
-    }
-  },
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -23,7 +12,6 @@
     "llm",
     "observability",
     "cost-tracking",
-    "missions",
     "ai"
   ],
   "author": "Candela HQ",
@@ -37,17 +25,7 @@
     "url": "https://github.com/candelahq/opencode-candela/issues"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "*",
-    "@opentui/core": ">=0.2.11",
-    "@opentui/solid": ">=0.2.11"
-  },
-  "peerDependenciesMeta": {
-    "@opentui/core": {
-      "optional": true
-    },
-    "@opentui/solid": {
-      "optional": true
-    }
+    "@opencode-ai/plugin": "*"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "latest",
