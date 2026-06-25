@@ -7,23 +7,23 @@ pre-commit:
 
     trailing-whitespace:
       glob: "*.{ts,js,json,yaml,yml,md}"
-      run: "grep -rn '[[:blank:]]$' {staged_files} && exit 1 || exit 0"
+      run: "grep -n '[[:blank:]]$' {staged_files} && exit 1 || exit 0"
 
     detect-private-key:
       glob: "*"
       exclude: "lefthook.yml"
-      run: "grep -rn -- '-----BEGIN.*KEY-----' {staged_files} && exit 1 || exit 0"
+      run: "grep -In -- '-----BEGIN.*KEY-----' {staged_files} && exit 1 || exit 0"
 
     check-merge-conflict:
       glob: "*"
-      run: "grep -rn '^<<<<<<< ' {staged_files} && exit 1 || exit 0"
+      run: "grep -In '^<<<<<<< ' {staged_files} && exit 1 || exit 0"
 
     end-of-file-fixer:
       glob: "*.{ts,js,json,yaml,yml,md}"
       run: |
         fail=0
         for f in {staged_files}; do
-          if [ -s "$f" ] && [ "$(tail -c1 "$f" | xxd -p)" != "0a" ]; then
+          if [ -s "$f" ] && [ "$(tail -c 1 "$f" | wc -l)" -eq 0 ]; then
             echo "No newline at end of: $f"
             fail=1
           fi
