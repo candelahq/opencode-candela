@@ -1,0 +1,31 @@
+pre-commit:
+  parallel: true
+  commands:
+    biome-check:
+      glob: "*.{ts,js,json}"
+      run: npx biome check {staged_files}
+
+    trailing-whitespace:
+      glob: "*.{ts,js,json,yaml,yml,md}"
+      run: "grep -rn '[[:blank:]]$' {staged_files} && exit 1 || exit 0"
+
+    detect-private-key:
+      glob: "*"
+      exclude: "lefthook.yml"
+      run: "grep -rn -- '-----BEGIN.*KEY-----' {staged_files} && exit 1 || exit 0"
+
+    check-merge-conflict:
+      glob: "*"
+      run: "grep -rn '^<<<<<<< ' {staged_files} && exit 1 || exit 0"
+
+    end-of-file-fixer:
+      glob: "*.{ts,js,json,yaml,yml,md}"
+      run: |
+        fail=0
+        for f in {staged_files}; do
+          if [ -s "$f" ] && [ "$(tail -c1 "$f" | xxd -p)" != "0a" ]; then
+            echo "No newline at end of: $f"
+            fail=1
+          fi
+        done
+        exit $fail
