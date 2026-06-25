@@ -12,8 +12,8 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
+import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
-import type { BudgetInfo, GrantInfo } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
 
 /** Format USD with appropriate precision */
@@ -108,7 +108,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
   // Track per-session state
   let sessionStartTime: Date | null = null;
-  let sessionToolCalls = 0;
+  let _sessionToolCalls = 0;
 
   return {
     /**
@@ -131,7 +131,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       // Track session start — clear cache for fresh data
       if (event.type === "session.created") {
         sessionStartTime = new Date();
-        sessionToolCalls = 0;
+        _sessionToolCalls = 0;
         candela.resetHealth();
         candela.invalidateCache();
       }
@@ -141,7 +141,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         const data = await candela.getDashboardData(1); // last hour
         if (data && data.usage.requestCount > 0) {
           const duration = Math.round(
-            (Date.now() - sessionStartTime.getTime()) / 1000
+            (Date.now() - sessionStartTime.getTime()) / 1000,
           );
           const minutes = Math.floor(duration / 60);
           const seconds = duration % 60;
@@ -163,7 +163,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           const summary = parts.join(" · ");
 
           try {
-            await $`osascript -e ${"display notification \"" + summary + "\" with title \"Candela\" subtitle \"Session Summary\""}`;
+            await $`osascript -e ${`display notification "${summary}" with title "Candela" subtitle "Session Summary"`}`;
           } catch {
             // Non-macOS or notification permission denied — log instead
             await client.app.log({
@@ -181,7 +181,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           const b = data.budget;
           const budgetMsg = `${formatCost(b.remainingUsd)} remaining (${b.percentUsed.toFixed(0)}% used)${b.resetLabel ? ` — ${b.resetLabel}` : ""}`;
           try {
-            await $`osascript -e ${"display notification \"" + budgetMsg + "\" with title \"Candela\" subtitle \"⚠️ Budget Warning\""}`;
+            await $`osascript -e ${`display notification "${budgetMsg}" with title "Candela" subtitle "⚠️ Budget Warning"`}`;
           } catch {
             await client.app.log({
               body: {
@@ -199,7 +199,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
      * Track tool executions for session attribution.
      */
     "tool.execute.after": async () => {
-      sessionToolCalls++;
+      _sessionToolCalls++;
     },
 
     /**
@@ -212,12 +212,15 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       const data = await candela.getDashboardData(4); // last 4 hours
       if (data && data.usage.requestCount > 0) {
         // Model breakdown (from dedicated endpoint for full detail)
-        const models = data.models.length > 0 ? data.models : (await candela.getModelBreakdown(4) ?? []);
+        const models =
+          data.models.length > 0
+            ? data.models
+            : ((await candela.getModelBreakdown(4)) ?? []);
         const modelLines = models
           .slice(0, 5)
           .map(
             (m) =>
-              `  - ${m.model} (${m.provider}): ${formatTokens(m.totalTokens)} tokens, ${formatCost(m.totalCostUsd)}`
+              `  - ${m.model} (${m.provider}): ${formatTokens(m.totalTokens)} tokens, ${formatCost(m.totalCostUsd)}`,
           )
           .join("\n");
 
@@ -247,16 +250,18 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             ? ` — expires ${g.expiresAt.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
             : "";
           sections.push(
-            `Active grant: ${formatCost(g.remainingUsd)} of ${formatCost(g.amountUsd)} (${g.reason || "Bonus"}${expiryNote})`
+            `Active grant: ${formatCost(g.remainingUsd)} of ${formatCost(g.amountUsd)} (${g.reason || "Bonus"}${expiryNote})`,
           );
         }
 
         if (data.totalRemainingUsd !== null) {
-          sections.push(`Total available: ${formatCost(data.totalRemainingUsd)}`);
+          sections.push(
+            `Total available: ${formatCost(data.totalRemainingUsd)}`,
+          );
         }
 
         sections.push(
-          `Be cost-conscious — ${data.budget?.resetLabel ? `daily budget ${data.budget.resetLabel}.` : "prefer concise responses when possible."}`
+          `Be cost-conscious — ${data.budget?.resetLabel ? `daily budget ${data.budget.resetLabel}.` : "prefer concise responses when possible."}`,
         );
 
         output.context.push(sections.join("\n"));

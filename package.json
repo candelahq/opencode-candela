@@ -4,6 +4,11 @@
   "description": "OpenCode plugin for Candela — session tracking, cost toasts, and budget warnings for LLM observability",
   "type": "module",
   "main": "src/index.ts",
+  "scripts": {
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/"
+  },
   "types": "src/index.ts",
   "keywords": [
     "opencode",
@@ -28,6 +33,7 @@
     "@opencode-ai/plugin": "*"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
     "@opencode-ai/plugin": "latest",
     "@types/node": "^25.8.0",
     "typescript": "^5.8.0"

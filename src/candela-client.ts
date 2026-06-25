@@ -94,12 +94,12 @@ function parseBudget(raw: Record<string, unknown>): BudgetInfo | null {
   if (!raw) return null;
   const limitUsd = Number(raw.limitUsd ?? raw.limit_usd ?? 0);
   const spentUsd = Number(raw.spentUsd ?? raw.spent_usd ?? 0);
-  if (!isFinite(limitUsd) || !isFinite(spentUsd)) return null;
+  if (!Number.isFinite(limitUsd) || !Number.isFinite(spentUsd)) return null;
   const remaining = Math.max(0, limitUsd - spentUsd);
   const fraction = limitUsd > 0 ? Math.min(1, spentUsd / limitUsd) : 0;
   const periodEndRaw = (raw.periodEnd ?? raw.period_end) as string | undefined;
   const periodEnd = periodEndRaw ? new Date(periodEndRaw) : null;
-  if (periodEnd && isNaN(periodEnd.getTime())) return null;
+  if (periodEnd && Number.isNaN(periodEnd.getTime())) return null;
 
   return {
     limitUsd,
@@ -118,7 +118,9 @@ function parseBudget(raw: Record<string, unknown>): BudgetInfo | null {
 function parseGrants(raw: unknown[]): GrantInfo[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .filter((g): g is Record<string, unknown> => g != null && typeof g === "object")
+    .filter(
+      (g): g is Record<string, unknown> => g != null && typeof g === "object",
+    )
     .map((g) => {
       const amountUsd = Number(g.amountUsd ?? g.amount_usd ?? 0);
       const spentUsd = Number(g.spentUsd ?? g.spent_usd ?? 0);
@@ -156,7 +158,9 @@ function makeTimeRange(hours: number): Record<string, unknown> {
 function parseModels(raw: unknown[]): ModelUsage[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .filter((m): m is Record<string, unknown> => m != null && typeof m === "object")
+    .filter(
+      (m): m is Record<string, unknown> => m != null && typeof m === "object",
+    )
     .map((m) => ({
       model: String(m.model ?? ""),
       provider: String(m.provider ?? ""),
@@ -167,7 +171,7 @@ function parseModels(raw: unknown[]): ModelUsage[] {
       requestCount: Number(m.callCount ?? m.call_count ?? 0),
       cacheReadTokens: Number(m.cacheReadTokens ?? m.cache_read_tokens ?? 0),
       cacheCreationTokens: Number(
-        m.cacheCreationTokens ?? m.cache_creation_tokens ?? 0
+        m.cacheCreationTokens ?? m.cache_creation_tokens ?? 0,
       ),
     }));
 }
@@ -262,7 +266,7 @@ export class CandelaClient {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(makeTimeRange(hours)),
-        }
+        },
       );
       if (!res.ok) return null;
       const data = await res.json();
@@ -275,7 +279,7 @@ export class CandelaClient {
   // ── Private: consolidated RPC ─────────────────────────────────────────────
 
   private async tryGetDashboardData(
-    hours: number
+    hours: number,
   ): Promise<DashboardData | null> {
     try {
       const res = await fetch(
@@ -287,7 +291,7 @@ export class CandelaClient {
             ...makeTimeRange(hours),
             include_budget: true,
           }),
-        }
+        },
       );
       // 404 / 501 = backend hasn't upgraded → trigger fallback
       if (res.status === 404 || res.status === 501) return null;
@@ -318,13 +322,11 @@ export class CandelaClient {
 
       if (bc && typeof bc === "object") {
         budget = parseBudget(bc.budget ?? {});
-        activeGrants = parseGrants(
-          bc.activeGrants ?? bc.active_grants ?? []
-        );
+        activeGrants = parseGrants(bc.activeGrants ?? bc.active_grants ?? []);
         const rawRemaining = Number(
-          bc.totalRemainingUsd ?? bc.total_remaining_usd ?? 0
+          bc.totalRemainingUsd ?? bc.total_remaining_usd ?? 0,
         );
-        if (isFinite(rawRemaining) && rawRemaining >= 0) {
+        if (Number.isFinite(rawRemaining) && rawRemaining >= 0) {
           totalRemainingUsd = rawRemaining;
         }
       }
@@ -343,22 +345,16 @@ export class CandelaClient {
 
       // Fan out: usage summary + budget (parallel)
       const [summaryRes, budgetRes] = await Promise.all([
-        fetch(
-          `${this.baseUrl}/candela.v1.DashboardService/GetUsageSummary`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(timeRange),
-          }
-        ).catch(() => null),
-        fetch(
-          `${this.baseUrl}/candela.v1.UserService/GetMyBudget`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          }
-        ).catch(() => null),
+        fetch(`${this.baseUrl}/candela.v1.DashboardService/GetUsageSummary`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(timeRange),
+        }).catch(() => null),
+        fetch(`${this.baseUrl}/candela.v1.UserService/GetMyBudget`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }).catch(() => null),
       ]);
 
       // Parse usage
@@ -377,7 +373,7 @@ export class CandelaClient {
             Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
           inputTokens: Number(s.totalInputTokens ?? s.total_input_tokens ?? 0),
           outputTokens: Number(
-            s.totalOutputTokens ?? s.total_output_tokens ?? 0
+            s.totalOutputTokens ?? s.total_output_tokens ?? 0,
           ),
           totalCostUsd: Number(s.totalCostUsd ?? s.total_cost_usd ?? 0),
           requestCount: Number(s.totalLlmCalls ?? s.total_llm_calls ?? 0),
@@ -392,13 +388,11 @@ export class CandelaClient {
         try {
           const b = await budgetRes.json();
           budget = parseBudget(b.budget ?? {});
-          activeGrants = parseGrants(
-            b.activeGrants ?? b.active_grants ?? []
-          );
+          activeGrants = parseGrants(b.activeGrants ?? b.active_grants ?? []);
           const rawRemaining = Number(
-            b.totalRemainingUsd ?? b.total_remaining_usd ?? 0
+            b.totalRemainingUsd ?? b.total_remaining_usd ?? 0,
           );
-          if (isFinite(rawRemaining) && rawRemaining >= 0) {
+          if (Number.isFinite(rawRemaining) && rawRemaining >= 0) {
             totalRemainingUsd = rawRemaining;
           }
         } catch {

@@ -9,9 +9,9 @@
  * 5. Default: http://localhost:8181
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 const DEFAULT_URL = "http://localhost:8181";
 
@@ -33,7 +33,7 @@ function extractPortFromConfig(filePath: string): number | null {
     // Match "server:" section followed by "port: <number>"
     // Handles optional whitespace and comments
     const match = content.match(
-      /^server:\s*\n(?:\s+\w+:.*\n)*?\s+port:\s*(\d+)/m
+      /^server:\s*\n(?:\s+\w+:.*\n)*?\s+port:\s*(\d+)/m,
     );
     if (match?.[1]) {
       return parseInt(match[1], 10);
@@ -60,7 +60,7 @@ function extractHostFromConfig(filePath: string): string | null {
     const content = readFileSync(filePath, "utf-8");
 
     const match = content.match(
-      /^server:\s*\n(?:\s+\w+:.*\n)*?\s+host:\s*"?([^"\s\n]+)"?/m
+      /^server:\s*\n(?:\s+\w+:.*\n)*?\s+host:\s*"?([^"\s\n]+)"?/m,
     );
     return match?.[1] ?? null;
   } catch {
