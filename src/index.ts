@@ -7,6 +7,10 @@
  * - Active grant display with expiry warnings
  * - Candela proxy URL injection into shells
  * - Rich cost + budget context injection during session compaction
+ * - Session attribution headers for cost tracking (chat.headers)
+ * - Per-task cost attribution via native Todo + Subtask tracking
+ * - Cost-aware model parameter adjustment (chat.params)
+ * - Deterministic policy gates blocking destructive operations (tool.execute.before)
  *
  * Gracefully no-ops if Candela is not running.
  */
@@ -53,7 +57,7 @@ function formatGrant(g: GrantInfo): string {
   return parts.join("");
 }
 
-export const CandelaPlugin: Plugin = async ({ client, $ }) => {
+export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
   const candelaUrl = discoverCandelaUrl();
   const candela = new CandelaClient(candelaUrl);
 
@@ -110,6 +114,35 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionStartTime: Date | null = null;
   let _sessionToolCalls = 0;
 
+  // ── Native task tracking for cost attribution ─────────────────────────
+  // Track OpenCode's native Todo items and subtask sessions so we can tag
+  // LLM spans with per-task/per-subtask cost attribution headers.
+  let currentTodoId: string | null = null;
+  const subtaskSessions = new Map<string, { parentId: string; title: string }>();
+
+  // ── Policy configuration ─────────────────────────────────────────────────
+  // Blocked file patterns (policy gates) — add project-specific patterns
+  // via CANDELA_BLOCKED_PATTERNS env var (comma-separated globs).
+  const defaultBlockedPatterns = [
+    "pricing.yaml",
+    "pricing.json",
+    ".env",
+    ".env.production",
+  ];
+  const extraPatterns = (process.env.CANDELA_BLOCKED_PATTERNS ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const blockedPatterns = [...defaultBlockedPatterns, ...extraPatterns];
+
+  const blockedCommands = [
+    "rm -rf /",
+    "drop table",
+    "drop database",
+    "truncate table",
+    "format c:",
+  ];
+
   return {
     /**
      * Inject Candela environment variables into all shell executions.
@@ -123,13 +156,160 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     },
 
     /**
+     * Tag every LLM request with session metadata for cost attribution.
+     * Candela uses these headers to break down costs per session/agent.
+     */
+    "chat.headers": async (input, output) => {
+      if (!alive) return;
+      output.headers["X-Candela-Session"] = input.sessionID;
+      output.headers["X-Candela-Agent"] = input.agent;
+      output.headers["X-Candela-Model"] =
+        `${input.provider.info.id}/${input.model.id}`;
+      output.headers["X-Candela-Source"] = "opencode";
+
+      // Per-task cost attribution: tag with active todo item
+      if (currentTodoId) {
+        output.headers["X-Candela-Todo-Id"] = currentTodoId;
+      }
+
+      // Per-subtask cost attribution: tag child sessions
+      const subtask = subtaskSessions.get(input.sessionID);
+      if (subtask) {
+        output.headers["X-Candela-Subtask-Parent"] = subtask.parentId;
+        output.headers["X-Candela-Subtask-Title"] = subtask.title;
+      }
+    },
+
+    /**
+     * Cost-aware model parameter adjustment.
+     * When budget is running low, limit output tokens and reduce temperature
+     * to control costs. When budget is critical, apply aggressive limits.
+     */
+    "chat.params": async (_input, output) => {
+      if (!alive) return;
+
+      const data = await candela.getDashboardData(1);
+      if (!data?.budget) return;
+
+      const { usedFraction } = data.budget;
+
+      // Critical: >95% budget used — hard cap output tokens
+      if (usedFraction > 0.95) {
+        output.maxOutputTokens = Math.min(
+          output.maxOutputTokens ?? 8192,
+          2048
+        );
+        if (output.temperature !== undefined) {
+          output.temperature = Math.min(output.temperature, 0.2);
+        }
+        await client.app.log({
+          body: {
+            service: "opencode-candela",
+            level: "warn",
+            message: `🔴 Budget critical (${(usedFraction * 100).toFixed(0)}%) — output capped at 2K tokens`,
+          },
+        });
+      }
+      // Warning: >80% budget used — reduce temperature for focus
+      else if (usedFraction > 0.8) {
+        if (output.temperature !== undefined) {
+          output.temperature = Math.min(output.temperature, 0.4);
+        }
+      }
+    },
+
+    /**
+     * Deterministic policy gates — block destructive operations before
+     * they reach the tool. Similar to Factory Droid's PreToolUse hooks.
+     *
+     * - Blocks file edits to sensitive paths (pricing configs, .env files)
+     * - Blocks destructive shell commands (rm -rf /, DROP TABLE, etc.)
+     * - Configurable via CANDELA_BLOCKED_PATTERNS env var
+     */
+    "tool.execute.before": async (input, output) => {
+      // Policy gate: block writes to sensitive files
+      if (
+        input.tool === "file_edit" ||
+        input.tool === "file_write" ||
+        input.tool === "write" ||
+        input.tool === "edit"
+      ) {
+        const filePath: string =
+          output.args?.path ?? output.args?.file ?? output.args?.filePath ?? "";
+        const matchedPattern = blockedPatterns.find((pattern) =>
+          filePath.toLowerCase().includes(pattern.toLowerCase())
+        );
+        if (matchedPattern) {
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "warn",
+              message: `🛡️ Policy blocked: ${input.tool} on "${filePath}" (matches "${matchedPattern}")`,
+            },
+          });
+          throw new Error(
+            `🛡️ Blocked by Candela policy: edits to files matching "${matchedPattern}" ` +
+              `are not allowed. Edit this file manually and run tests.`
+          );
+        }
+      }
+
+      // Policy gate: block destructive shell commands
+      if (input.tool === "shell" || input.tool === "bash" || input.tool === "terminal") {
+        const cmd: string = String(
+          output.args?.command ?? output.args?.cmd ?? output.args?.input ?? ""
+        );
+        const matchedCmd = blockedCommands.find((blocked) =>
+          cmd.toLowerCase().includes(blocked.toLowerCase())
+        );
+        if (matchedCmd) {
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "warn",
+              message: `🛡️ Policy blocked: shell command containing "${matchedCmd}"`,
+            },
+          });
+          throw new Error(
+            `🛡️ Blocked by Candela policy: commands containing "${matchedCmd}" ` +
+              `are not allowed. Run this command manually if intended.`
+          );
+        }
+      }
+    },
+
+    /**
      * Listen for events to track session lifecycle and show cost toasts.
      */
     event: async ({ event }) => {
       if (!alive) return;
 
-      // Track session start — clear cache for fresh data
+      // Track todo items for per-task cost attribution
+      if (event.type === "todo.updated") {
+        const todos = (event as any).properties?.todos as Array<{ id: string; status: string }> | undefined;
+        if (todos) {
+          const active = todos.find((t) => t.status === "in_progress");
+          currentTodoId = active?.id ?? null;
+        }
+      }
+
+      // Track subtask child sessions for per-subtask cost
+      // Also track session start — clear cache for fresh data
       if (event.type === "session.created") {
+        const session = (event as any).properties?.info as { id: string; parentID?: string; title: string } | undefined;
+        if (session?.parentID) {
+          // Bound the map to prevent memory leaks in long-running processes
+          if (subtaskSessions.size >= 1000) {
+            const firstKey = subtaskSessions.keys().next().value;
+            if (firstKey !== undefined) {
+              subtaskSessions.delete(firstKey);
+            }
+          }
+          subtaskSessions.set(session.id, {
+            parentId: session.parentID,
+            title: session.title,
+          });
+        }
         sessionStartTime = new Date();
         _sessionToolCalls = 0;
         candela.resetHealth();
