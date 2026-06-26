@@ -199,7 +199,9 @@ export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
           output.maxOutputTokens ?? 8192,
           2048
         );
-        output.temperature = Math.min(output.temperature, 0.2);
+        if (output.temperature !== undefined) {
+          output.temperature = Math.min(output.temperature, 0.2);
+        }
         await client.app.log({
           body: {
             service: "opencode-candela",
@@ -210,7 +212,9 @@ export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
       }
       // Warning: >80% budget used — reduce temperature for focus
       else if (usedFraction > 0.8) {
-        output.temperature = Math.min(output.temperature, 0.4);
+        if (output.temperature !== undefined) {
+          output.temperature = Math.min(output.temperature, 0.4);
+        }
       }
     },
 
@@ -290,18 +294,22 @@ export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
       }
 
       // Track subtask child sessions for per-subtask cost
+      // Also track session start — clear cache for fresh data
       if (event.type === "session.created") {
         const session = (event as any).properties?.info as { id: string; parentID?: string; title: string } | undefined;
         if (session?.parentID) {
+          // Bound the map to prevent memory leaks in long-running processes
+          if (subtaskSessions.size >= 1000) {
+            const firstKey = subtaskSessions.keys().next().value;
+            if (firstKey !== undefined) {
+              subtaskSessions.delete(firstKey);
+            }
+          }
           subtaskSessions.set(session.id, {
             parentId: session.parentID,
             title: session.title,
           });
         }
-      }
-
-      // Track session start — clear cache for fresh data
-      if (event.type === "session.created") {
         sessionStartTime = new Date();
         sessionToolCalls = 0;
         candela.resetHealth();
