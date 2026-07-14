@@ -15,6 +15,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
+import { createCandelaTools } from "./tools.js";
 
 /** Format USD with appropriate precision */
 function formatCost(usd: number): string {
@@ -110,7 +111,13 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionStartTime: Date | null = null;
   let _sessionToolCalls = 0;
 
+  // ── Custom tools ──────────────────────────────────────────────────────────
+  // Register tools that the AI agent can call conversationally.
+  // e.g., "how much have I spent today?" → candela_cost_summary
+  const tools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
+
   return {
+    tool: tools,
     /**
      * Inject Candela environment variables into all shell executions.
      * This ensures any subprocess (test runners, scripts, etc.) can
