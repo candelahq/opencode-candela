@@ -14,6 +14,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
+import { createConfigTools } from "./config-tools.js";
 import { discoverCandelaUrl } from "./discover.js";
 import { createCandelaTools } from "./tools.js";
 
@@ -54,7 +55,7 @@ function formatGrant(g: GrantInfo): string {
   return parts.join("");
 }
 
-export const CandelaPlugin: Plugin = async ({ client, $ }) => {
+export const CandelaPlugin: Plugin = async ({ client, directory, $ }) => {
   const candelaUrl = discoverCandelaUrl();
   const candela = new CandelaClient(candelaUrl);
 
@@ -113,8 +114,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
   // ── Custom tools ──────────────────────────────────────────────────────────
   // Register tools that the AI agent can call conversationally.
-  // e.g., "how much have I spent today?" → candela_cost_summary
-  const tools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
+  // Phase 1: Cost queries — "how much have I spent today?"
+  // Phase 2: Config management — "add claude sonnet 4 through candela"
+  const costTools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
+  const configTools = createConfigTools(candela, candelaUrl, directory);
+  const tools = { ...configTools, ...costTools };
 
   return {
     tool: tools,
