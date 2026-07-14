@@ -57,7 +57,7 @@ const PROXY_ROUTES: Record<string, { route: string; providerKey: string }> = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Infer provider from model name. */
-function inferProvider(modelId: string): string | null {
+export function inferProvider(modelId: string): string | null {
   const lower = modelId.toLowerCase();
   if (
     lower.includes("claude") ||
@@ -83,7 +83,7 @@ function inferProvider(modelId: string): string | null {
 }
 
 /** Format a human-readable model name from an ID. */
-function humanName(modelId: string): string {
+export function humanName(modelId: string): string {
   return modelId
     .replace(/-maas$/, "")
     .replace(/-/g, " ")
