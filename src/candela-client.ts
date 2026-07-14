@@ -143,7 +143,7 @@ function parseGrants(raw: unknown[]): GrantInfo[] {
 }
 
 /** Build a ConnectRPC TimeRange JSON body for the given hours window. */
-function makeTimeRange(hours: number): Record<string, unknown> {
+export function makeTimeRange(hours: number): Record<string, unknown> {
   const now = new Date();
   const start = new Date(now.getTime() - hours * 60 * 60 * 1000);
   return {
