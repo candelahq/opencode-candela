@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readJsoncFile, writeJsonFile } from "../utils.js";
@@ -18,7 +24,7 @@ afterEach(() => {
 
 describe("readJsoncFile", () => {
   it("returns empty object for non-existent file", () => {
-    expect(readJsoncFile("/tmp/does-not-exist.json")).toEqual({});
+    expect(readJsoncFile(join(TEST_DIR, "does-not-exist.json"))).toEqual({});
   });
 
   it("reads and parses a JSON file", () => {
@@ -33,7 +39,6 @@ describe("readJsoncFile", () => {
   "baseURL": "http://localhost:8181/proxy/v1",
   "name": "test",
 }`;
-    const { writeFileSync } = require("node:fs");
     writeFileSync(TEST_FILE, content, "utf-8");
 
     const result = readJsoncFile<{ baseURL: string; name: string }>(TEST_FILE);
