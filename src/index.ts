@@ -14,22 +14,10 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
+import { createConfigTools } from "./config-tools.js";
 import { discoverCandelaUrl } from "./discover.js";
 import { createCandelaTools } from "./tools.js";
-
-/** Format USD with appropriate precision */
-function formatCost(usd: number): string {
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}
-
-/** Format token count with K/M suffixes */
-function formatTokens(count: number): string {
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
-  return String(count);
-}
+import { formatCost, formatTokens } from "./utils.js";
 
 /** Budget urgency emoji based on usage fraction. */
 function budgetEmoji(fraction: number): string {
@@ -113,8 +101,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
   // ── Custom tools ──────────────────────────────────────────────────────────
   // Register tools that the AI agent can call conversationally.
-  // e.g., "how much have I spent today?" → candela_cost_summary
-  const tools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
+  // Phase 1: Cost queries — "how much have I spent today?"
+  // Phase 2: Config management — "add claude sonnet 4 through candela"
+  const costTools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
+  const configTools = createConfigTools(candela, candelaUrl);
+  const tools = { ...configTools, ...costTools };
 
   return {
     tool: tools,

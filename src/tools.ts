@@ -15,38 +15,12 @@
 import { tool } from "@opencode-ai/plugin";
 import type { CandelaClient } from "./candela-client.js";
 import { makeTimeRange } from "./candela-client.js";
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatCost(usd: number): string {
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}
-
-function formatTokens(count: number): string {
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
-  return String(count);
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const mins = Math.floor(ms / 60_000);
-  const secs = Math.round((ms % 60_000) / 1000);
-  return `${mins}m${secs}s`;
-}
-
-function budgetBar(fraction: number, width = 20): string {
-  const clamped = Math.max(0, Math.min(1, fraction));
-  const filled = Math.round(clamped * width);
-  const empty = width - filled;
-  const bar = "█".repeat(filled) + "░".repeat(empty);
-  if (clamped >= 0.9) return `🔴 [${bar}]`;
-  if (clamped >= 0.6) return `🟡 [${bar}]`;
-  return `🟢 [${bar}]`;
-}
+import {
+  budgetBar,
+  formatCost,
+  formatDuration,
+  formatTokens,
+} from "./utils.js";
 
 // ── Trace types ───────────────────────────────────────────────────────────────
 
