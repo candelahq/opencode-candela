@@ -1,10 +1,12 @@
 {
   "name": "opencode-candela",
-  "version": "0.1.0",
-  "description": "OpenCode plugin for Candela — session tracking, cost toasts, and budget warnings for LLM observability",
+  "version": "0.2.0",
+  "description": "OpenCode plugin for Candela — conversational cost queries, budget tracking, model configuration, and LLM observability",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/"
@@ -36,7 +38,8 @@
     "@biomejs/biome": "^2.0.0",
     "@opencode-ai/plugin": "latest",
     "@types/node": "^25.8.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.10"
   },
   "files": [
     "src/"

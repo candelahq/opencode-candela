@@ -28,6 +28,9 @@ jobs:
       - name: Lint
         run: npx biome check src/
 
+      - name: Test
+        run: npm test
+
       - name: Type check
         run: npx tsc --noEmit
 
