@@ -32,15 +32,23 @@
     "url": "https://github.com/candelahq/opencode-candela/issues"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "*"
+    "@opencode-ai/plugin": "*",
+    "@opentui/core": ">=0.2.11",
+    "@opentui/solid": ">=0.2.11",
+    "solid-js": "^1.9.12"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": { "optional": true },
+    "@opentui/solid": { "optional": true },
+    "solid-js": { "optional": true }
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
     "@opencode-ai/plugin": "latest",
-    "@opentui/core": "^0.4.3",
-    "@opentui/solid": "^0.4.3",
+    "@opentui/core": "0.4.3",
+    "@opentui/solid": "0.4.3",
     "@types/node": "^25.8.0",
-    "solid-js": "^1.9.14",
+    "solid-js": "1.9.12",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   },
