@@ -22,8 +22,8 @@ export const tui: TuiPlugin = async (api) => {
 
   // ── State ─────────────────────────────────────────────────────────────────
   // Poll Candela every 30s for dashboard data
-  let budgetPct = 0;
-  let budgetRemaining = 0;
+  let budgetPct: number | null = null;
+  let budgetRemaining: number | null = null;
   let budgetEmoji = "🟢";
   let totalCost24h = 0;
   let topModels: Array<{ model: string; cost: number; calls: number }> = [];
@@ -47,6 +47,10 @@ export const tui: TuiPlugin = async (api) => {
             : data.budget.usedFraction >= 0.6
               ? "🟡"
               : "🟢";
+      } else {
+        budgetPct = null;
+        budgetRemaining = null;
+        budgetEmoji = "🟢";
       }
 
       totalCost24h = data.usage.totalCostUsd ?? 0;
@@ -82,7 +86,10 @@ export const tui: TuiPlugin = async (api) => {
         // Refresh on render
         refresh();
 
-        const budgetLine = `${budgetEmoji} Budget: ${budgetPct}% used · ${formatCost(budgetRemaining)} left`;
+        const budgetLine =
+          budgetPct === null || budgetRemaining === null
+            ? "Budget: unavailable"
+            : `${budgetEmoji} Budget: ${budgetPct}% used · ${formatCost(budgetRemaining)} left`;
         const costLine = `💰 24h spend: ${formatCost(totalCost24h)}`;
 
         const modelLines = topModels.length
@@ -102,7 +109,9 @@ export const tui: TuiPlugin = async (api) => {
 
       // Sidebar footer — compact budget status
       sidebar_footer: () => {
-        return `${budgetEmoji} ${formatCost(budgetRemaining)} remaining` as unknown as null;
+        return (budgetRemaining === null
+          ? "Budget: unavailable"
+          : `${budgetEmoji} ${formatCost(budgetRemaining)} remaining`) as unknown as null;
       },
     },
   });
@@ -115,7 +124,17 @@ export const tui: TuiPlugin = async (api) => {
     await refresh();
 
     const threshold =
-      budgetPct >= 100 ? 100 : budgetPct >= 90 ? 90 : budgetPct >= 80 ? 80 : 0;
+      budgetPct != null && budgetPct >= 100
+        ? 100
+        : budgetPct != null && budgetPct >= 90
+          ? 90
+          : budgetPct != null && budgetPct >= 80
+            ? 80
+            : 0;
+
+    if (threshold === 0) {
+      lastToastThreshold = 0;
+    }
 
     if (threshold > 0 && threshold > lastToastThreshold) {
       lastToastThreshold = threshold;
@@ -125,8 +144,8 @@ export const tui: TuiPlugin = async (api) => {
         title: `${budgetEmoji} Budget ${threshold}%`,
         message:
           threshold >= 100
-            ? `Budget exhausted! ${formatCost(budgetRemaining)} remaining.`
-            : `You've used ${budgetPct}% of your budget. ${formatCost(budgetRemaining)} remaining.`,
+            ? `Budget exhausted! ${formatCost(budgetRemaining ?? 0)} remaining.`
+            : `You've used ${budgetPct}% of your budget. ${formatCost(budgetRemaining ?? 0)} remaining.`,
         variant,
       });
     }

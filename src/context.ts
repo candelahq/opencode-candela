@@ -44,51 +44,58 @@ export function createContextHook(candela: CandelaClient) {
 
     // Refresh cache if stale
     if (!cachedContext || now - lastFetch > CACHE_TTL) {
-      lastFetch = now;
       try {
         const data = await candela.getDashboardData(24);
-        if (!data) return;
+        if (data) {
+          const parts: string[] = ["[Candela]"];
 
-        const parts: string[] = ["[Candela]"];
-
-        // Budget status
-        if (data.budget) {
-          const b = data.budget;
-          parts.push(
-            `Budget: ${b.percentUsed.toFixed(0)}% used (${formatCost(b.spentUsd)} of ${formatCost(b.limitUsd)}).`,
-          );
-
-          // Urgency markers
-          if (b.usedFraction >= 0.9) {
+          // Budget status
+          if (data.budget) {
+            const b = data.budget;
             parts.push(
-              "⚠️ BUDGET CRITICAL — minimize token usage, avoid long outputs.",
+              `Budget: ${b.percentUsed.toFixed(0)}% used (${formatCost(b.spentUsd)} of ${formatCost(b.limitUsd)}).`,
             );
-          } else if (b.usedFraction >= 0.6) {
-            parts.push("Budget getting tight — be concise where possible.");
+
+            // Urgency markers
+            if (b.usedFraction >= 0.9) {
+              parts.push(
+                "⚠️ BUDGET CRITICAL — minimize token usage, avoid long outputs.",
+              );
+            } else if (b.usedFraction >= 0.6) {
+              parts.push("Budget getting tight — be concise where possible.");
+            }
           }
-        }
 
-        // Today's spend
-        if (data.usage.totalCostUsd != null) {
-          parts.push(`Today's spend: ${formatCost(data.usage.totalCostUsd)}.`);
-        }
+          // Last 24h spend
+          if (data.usage.totalCostUsd != null) {
+            parts.push(
+              `Last 24h spend: ${formatCost(data.usage.totalCostUsd)}.`,
+            );
+          }
 
-        cachedContext = parts.join(" ");
+          cachedContext = parts.join(" ");
+          lastFetch = now;
+        }
       } catch {
-        // Non-fatal — skip injection on error
-        return;
+        // Non-fatal — keep using stale cache if we have it
       }
     }
 
     if (!cachedContext) return;
 
     // Build model-specific context
-    const modelContext = `Current model: ${input.model.id} via ${input.model.providerID}.`;
+    const modelId = input?.model?.id;
+    const providerID = input?.model?.providerID;
+    const modelContext = modelId
+      ? `Current model: ${modelId} via ${providerID}.`
+      : "";
 
     // Suggest cheaper alternatives if not already using one
-    const isCurrentCheap = CHEAP_MODELS.some((m) =>
-      input.model.id.toLowerCase().includes(m.toLowerCase()),
-    );
+    const isCurrentCheap = modelId
+      ? CHEAP_MODELS.some((m) =>
+          modelId.toLowerCase().includes(m.toLowerCase()),
+        )
+      : false;
     const suggestion = isCurrentCheap
       ? ""
       : " For simple tasks (formatting, small edits), consider cheaper models.";
