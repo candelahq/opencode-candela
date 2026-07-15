@@ -1,20 +1,29 @@
 /**
  * opencode-candela — OpenCode plugin for Candela LLM observability.
  *
- * Hooks into OpenCode session lifecycle to provide:
+ * Server hooks (session lifecycle):
  * - Session-scoped cost tracking with idle toasts
  * - Budget remaining warnings with reset countdown
  * - Active grant display with expiry warnings
  * - Candela proxy URL injection into shells
  * - Rich cost + budget context injection during session compaction
+ * - Cost-awareness system prompt injection
+ *
+ * TUI hooks (terminal UI):
+ * - Sidebar cost dashboard with budget, top models
+ * - Budget threshold toast notifications
  *
  * Gracefully no-ops if Candela is not running.
  */
+
+// Re-export TUI plugin for OpenCode to discover
+export { tui } from "./tui.js";
 
 import type { Plugin } from "@opencode-ai/plugin";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
 import { createConfigTools } from "./config-tools.js";
+import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
 import { createCandelaTools } from "./tools.js";
 import { formatCost, formatTokens } from "./utils.js";
@@ -106,9 +115,12 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const costTools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
   const configTools = createConfigTools(candela, candelaUrl);
   const tools = { ...configTools, ...costTools };
+  // Phase 3: Context injection — cost awareness in system prompt
+  const contextHook = alive ? createContextHook(candela) : undefined;
 
   return {
     tool: tools,
+    "experimental.chat.system.transform": contextHook,
     /**
      * Inject Candela environment variables into all shell executions.
      * This ensures any subprocess (test runners, scripts, etc.) can
