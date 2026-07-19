@@ -58,7 +58,7 @@ export function createContextHook(candela: CandelaClient) {
   let cachedContext: string | null = null;
   let cachedFraction = 0;
   let lastFetch = 0;
-  let isFirstCall = true;
+  const injectedSessions = new Set<string>();
   const CACHE_TTL = 60_000; // 1 minute
 
   const hook = async (
@@ -102,9 +102,9 @@ export function createContextHook(candela: CandelaClient) {
             0,
           );
           if (totalCacheRead > 0 && data.usage.inputTokens > 0) {
-            const hitRate = (
-              (totalCacheRead / data.usage.inputTokens) *
-              100
+            const hitRate = Math.min(
+              100,
+              (totalCacheRead / data.usage.inputTokens) * 100,
             ).toFixed(0);
             parts.push(`Cache hit rate: ${hitRate}%.`);
           }
@@ -119,11 +119,12 @@ export function createContextHook(candela: CandelaClient) {
 
     if (!cachedContext) return;
 
-    // Throttle: below 80% budget, only inject on the first call of the
+    // Throttle: below 80% budget, only inject on the first call of each
     // session. The inline TUI indicator provides ambient awareness for
     // the rest. Above 80%, inject every call so the AI stays cost-aware.
-    if (!isFirstCall && cachedFraction < 0.8) return;
-    isFirstCall = false;
+    const sessionID = input?.sessionID ?? "default";
+    if (injectedSessions.has(sessionID) && cachedFraction < 0.8) return;
+    injectedSessions.add(sessionID);
 
     // Build model-specific context
     const modelId = input?.model?.id;
@@ -149,7 +150,7 @@ export function createContextHook(candela: CandelaClient) {
     hook,
     /** Reset the first-call flag. Call on session.created. */
     resetSession() {
-      isFirstCall = true;
+      injectedSessions.clear();
       cachedContext = null;
     },
   };

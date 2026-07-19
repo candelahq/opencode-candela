@@ -124,7 +124,10 @@ export function createCandelaTools(candela: CandelaClient, candelaUrl: string) {
       // Cache effectiveness
       const totalCacheRead = models.reduce((s, m) => s + m.cacheReadTokens, 0);
       if (totalCacheRead > 0 && usage.inputTokens > 0) {
-        const hitRate = ((totalCacheRead / usage.inputTokens) * 100).toFixed(0);
+        const hitRate = Math.min(
+          100,
+          (totalCacheRead / usage.inputTokens) * 100,
+        ).toFixed(0);
         lines.push(
           "",
           `**Cache**: ${hitRate}% hit rate (${formatTokens(totalCacheRead)} cached reads of ${formatTokens(usage.inputTokens)} input)`,

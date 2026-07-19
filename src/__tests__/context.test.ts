@@ -17,6 +17,15 @@ function makeDashboardData(overrides: {
     resetLabel?: string;
   } | null;
   totalCostUsd?: number | null;
+  models?: Array<{
+    model: string;
+    provider: string;
+    totalTokens: number;
+    totalCostUsd: number;
+    requestCount: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  }>;
 }) {
   return {
     usage: {
@@ -26,7 +35,7 @@ function makeDashboardData(overrides: {
       totalCostUsd: overrides.totalCostUsd ?? 3.2,
       requestCount: 10,
     },
-    models: [],
+    models: overrides.models ?? [],
     budget: overrides.budget
       ? {
           limitUsd: 12,
@@ -331,6 +340,134 @@ describe("createContextHook", () => {
       await hook(makeInput(), output);
       expect(output.system[0]).toContain("Last 24h spend");
       expect(output.system[0]).not.toContain("Today's spend");
+    });
+  });
+
+  // ── Throttled injection ────────────────────────────────────────────────────
+
+  describe("throttled injection", () => {
+    it("injects context on first call even at low budget", async () => {
+      const data = makeDashboardData({
+        budget: { usedFraction: 0.3, percentUsed: 30 },
+        totalCostUsd: 1,
+      });
+      const client = makeMockClient(data);
+      const { hook } = createContextHook(client);
+
+      const output = makeOutput();
+      await hook({ sessionID: "s1", ...makeInput() }, output);
+      expect(output.system).toHaveLength(1);
+    });
+
+    it("suppresses injection on second call when budget < 80%", async () => {
+      const data = makeDashboardData({
+        budget: { usedFraction: 0.3, percentUsed: 30 },
+        totalCostUsd: 1,
+      });
+      const client = makeMockClient(data);
+      const { hook } = createContextHook(client);
+
+      // First call — injects
+      await hook({ sessionID: "s1", ...makeInput() }, makeOutput());
+
+      // Second call — throttled
+      const output2 = makeOutput();
+      await hook({ sessionID: "s1", ...makeInput() }, output2);
+      expect(output2.system).toHaveLength(0);
+    });
+
+    it("injects on every call when budget >= 80%", async () => {
+      const data = makeDashboardData({
+        budget: { usedFraction: 0.85, percentUsed: 85 },
+        totalCostUsd: 5,
+      });
+      const client = makeMockClient(data);
+      const { hook } = createContextHook(client);
+
+      await hook({ sessionID: "s1", ...makeInput() }, makeOutput());
+      const output2 = makeOutput();
+      await hook({ sessionID: "s1", ...makeInput() }, output2);
+      expect(output2.system).toHaveLength(1);
+    });
+  });
+
+  // ── Session isolation ──────────────────────────────────────────────────────
+
+  describe("session isolation", () => {
+    it("injects first-call context per sessionID", async () => {
+      const data = makeDashboardData({
+        budget: { usedFraction: 0.3, percentUsed: 30 },
+        totalCostUsd: 1,
+      });
+      const client = makeMockClient(data);
+      const { hook } = createContextHook(client);
+
+      // Session A first call — injects
+      const outA = makeOutput();
+      await hook({ sessionID: "session-a", ...makeInput() }, outA);
+      expect(outA.system).toHaveLength(1);
+
+      // Session A second call — throttled
+      const outA2 = makeOutput();
+      await hook({ sessionID: "session-a", ...makeInput() }, outA2);
+      expect(outA2.system).toHaveLength(0);
+
+      // Session B first call — injects (different session)
+      const outB = makeOutput();
+      await hook({ sessionID: "session-b", ...makeInput() }, outB);
+      expect(outB.system).toHaveLength(1);
+    });
+
+    it("resetSession clears all session tracking", async () => {
+      const data = makeDashboardData({
+        budget: { usedFraction: 0.3, percentUsed: 30 },
+        totalCostUsd: 1,
+      });
+      const client = makeMockClient(data);
+      const { hook, resetSession } = createContextHook(client);
+
+      // First call — injects
+      await hook({ sessionID: "s1", ...makeInput() }, makeOutput());
+      // Second call — throttled
+      const out2 = makeOutput();
+      await hook({ sessionID: "s1", ...makeInput() }, out2);
+      expect(out2.system).toHaveLength(0);
+
+      // Reset — next call should inject again
+      resetSession();
+      const out3 = makeOutput();
+      await hook({ sessionID: "s1", ...makeInput() }, out3);
+      expect(out3.system).toHaveLength(1);
+    });
+  });
+
+  // ── Cache rate clamping ────────────────────────────────────────────────────
+
+  describe("cache rate clamping", () => {
+    it("clamps cache hit rate to 100% when cache_read > input", async () => {
+      const data = makeDashboardData({
+        budget: null,
+        totalCostUsd: 5,
+        models: [
+          {
+            model: "claude-sonnet-4",
+            provider: "anthropic",
+            totalTokens: 1000,
+            totalCostUsd: 5,
+            requestCount: 10,
+            cacheReadTokens: 800, // exceeds inputTokens of 500
+            cacheCreationTokens: 100,
+          },
+        ],
+      });
+      const client = makeMockClient(data);
+      const { hook } = createContextHook(client);
+
+      const output = makeOutput();
+      await hook(makeInput(), output);
+      // Should say 100%, not 160%
+      expect(output.system[0]).toContain("Cache hit rate: 100%.");
+      expect(output.system[0]).not.toMatch(/Cache hit rate: 1[0-9][1-9]%/);
     });
   });
 });
