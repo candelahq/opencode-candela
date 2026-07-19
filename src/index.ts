@@ -116,11 +116,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const configTools = createConfigTools(candela, candelaUrl);
   const tools = { ...configTools, ...costTools };
   // Phase 3: Context injection — cost awareness in system prompt
-  const contextHook = alive ? createContextHook(candela) : undefined;
+  const context = alive ? createContextHook(candela) : undefined;
 
   return {
     tool: tools,
-    "experimental.chat.system.transform": contextHook,
+    "experimental.chat.system.transform": context?.hook,
     /**
      * Inject Candela environment variables into all shell executions.
      * This ensures any subprocess (test runners, scripts, etc.) can
@@ -144,6 +144,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         _sessionToolCalls = 0;
         candela.resetHealth();
         candela.invalidateCache();
+        context?.resetSession();
       }
 
       // Show cost + budget summary when session goes idle
