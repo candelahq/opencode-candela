@@ -28,6 +28,8 @@ export const tui: TuiPlugin = async (api) => {
   let totalCost24h = 0;
   let topModels: Array<{ model: string; cost: number; calls: number }> = [];
   let lastRefresh = 0;
+  let sessionCalls = 0;
+  let sessionCostUsd = 0;
 
   async function refresh() {
     const now = Date.now();
@@ -54,6 +56,8 @@ export const tui: TuiPlugin = async (api) => {
       }
 
       totalCost24h = data.usage.totalCostUsd ?? 0;
+      sessionCalls = data.usage.requestCount ?? 0;
+      sessionCostUsd = data.usage.totalCostUsd ?? 0;
 
       if (data.models) {
         topModels = data.models
@@ -112,6 +116,26 @@ export const tui: TuiPlugin = async (api) => {
         return (budgetRemaining === null
           ? "Budget: unavailable"
           : `${budgetEmoji} ${formatCost(budgetRemaining)} remaining`) as unknown as null;
+      },
+
+      // Session prompt right — inline cost indicator next to the input
+      session_prompt_right: () => {
+        refresh();
+        if (sessionCalls === 0 && budgetPct === null) return null;
+
+        const parts: string[] = [];
+        if (sessionCostUsd > 0) {
+          parts.push(formatCost(sessionCostUsd));
+        }
+        if (sessionCalls > 0) {
+          parts.push(`${sessionCalls} calls`);
+        }
+        if (budgetPct !== null) {
+          parts.push(`${budgetEmoji}${budgetPct}%`);
+        }
+
+        if (parts.length === 0) return null;
+        return parts.join(" · ") as unknown as null;
       },
     },
   });
