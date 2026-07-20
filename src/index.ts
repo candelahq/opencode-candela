@@ -25,6 +25,8 @@ import { CandelaClient } from "./candela-client.js";
 import { createConfigTools } from "./config-tools.js";
 import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
+import { getActiveMission, pruneCompleted } from "./mission-store.js";
+import { createMissionTools } from "./mission-tools.js";
 import { createCandelaTools } from "./tools.js";
 import { formatCost, formatTokens } from "./utils.js";
 
@@ -123,9 +125,17 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     ? createCandelaTools(candela, candelaUrl, getSession)
     : undefined;
   const configTools = createConfigTools(candela, candelaUrl);
-  const tools = { ...configTools, ...costTools };
   // Phase 3: Context injection — cost awareness in system prompt
-  const context = alive ? createContextHook(candela) : undefined;
+  const context = alive
+    ? createContextHook(candela, () => getActiveMission())
+    : undefined;
+
+  // Prune old missions on startup (90-day retention)
+  pruneCompleted(90);
+  const missionTools = createMissionTools(
+    client as unknown as Parameters<typeof createMissionTools>[0],
+  );
+  const tools = { ...configTools, ...costTools, ...missionTools };
 
   return {
     tool: tools,
@@ -141,6 +151,10 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       output.env.OPENAI_BASE_URL = `${candelaUrl}/proxy/openai/v1`;
       if (sessionId) {
         output.env.CANDELA_SESSION_ID = sessionId;
+      }
+      const mission = getActiveMission();
+      if (mission) {
+        output.env.CANDELA_MISSION_ID = mission.id;
       }
     },
 
