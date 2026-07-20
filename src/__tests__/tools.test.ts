@@ -395,3 +395,209 @@ describe("makeTimeRangeFromDate", () => {
     expect(endSec - startSec).toBe(1800);
   });
 });
+
+// ── candela_inspect_trace ─────────────────────────────────────────────────────
+
+describe("candela_inspect_trace", () => {
+  const CANDELA_URL = "http://localhost:4100";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Build a GetTrace response */
+  function makeTraceResponse(
+    spans: Array<{
+      span_id?: string;
+      parent_span_id?: string;
+      model?: string;
+      provider?: string;
+      input_tokens?: number;
+      output_tokens?: number;
+      cost_usd?: number;
+      latency_ms?: number;
+      status_code?: number;
+      cache_read_tokens?: number;
+      cache_creation_tokens?: number;
+    }>,
+  ) {
+    return {
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          trace: {
+            trace_id: "abc123",
+            spans: spans.map((s, i) => ({
+              span_id: s.span_id ?? `span-${i}`,
+              parent_span_id: s.parent_span_id ?? "",
+              model: s.model ?? "claude-sonnet-4",
+              provider: s.provider ?? "anthropic",
+              input_tokens: s.input_tokens ?? 1000,
+              output_tokens: s.output_tokens ?? 500,
+              cost_usd: s.cost_usd ?? 0.05,
+              latency_ms: s.latency_ms ?? 1200,
+              status_code: s.status_code,
+              cache_read_tokens: s.cache_read_tokens ?? 0,
+              cache_creation_tokens: s.cache_creation_tokens ?? 0,
+            })),
+          },
+        }),
+    };
+  }
+
+  it("returns 'Trace Not Found' when fetch fails", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("connection refused")),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({ title: "Trace Not Found" }),
+    );
+  });
+
+  it("returns 'Empty Trace' when no spans", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ trace: { trace_id: "abc123", spans: [] } }),
+      }),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    );
+
+    expect(result).toEqual(expect.objectContaining({ title: "Empty Trace" }));
+  });
+
+  it("aggregates cost and tokens from multiple spans", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeTraceResponse([
+          { input_tokens: 2000, output_tokens: 800, cost_usd: 0.12 },
+          {
+            span_id: "child",
+            parent_span_id: "span-0",
+            input_tokens: 1000,
+            output_tokens: 400,
+            cost_usd: 0.06,
+          },
+        ]),
+      ),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toContain("2 spans");
+    expect(result.output).toContain("Spans | 2");
+  });
+
+  it("shows cache hit rate as percentage, not just raw count", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          makeTraceResponse([{ input_tokens: 2000, cache_read_tokens: 1500 }]),
+        ),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("Cache Hit Rate | 75%");
+  });
+
+  it("clamps cache hit rate to 100%", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          makeTraceResponse([{ input_tokens: 500, cache_read_tokens: 800 }]),
+        ),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("Cache Hit Rate | 100%");
+  });
+
+  it("shows root span details with model, provider, latency", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeTraceResponse([
+          {
+            model: "claude-sonnet-4",
+            provider: "anthropic",
+            status_code: 200,
+            latency_ms: 2500,
+          },
+        ]),
+      ),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("Root Span");
+    expect(result.output).toContain("claude-sonnet-4");
+    expect(result.output).toContain("anthropic");
+    expect(result.output).toContain("✅ 200");
+    expect(result.output).toContain("2.5s");
+  });
+
+  it("renders unknown status when statusCode is missing", async () => {
+    const client = makeMockClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeTraceResponse([
+          { model: "gpt-4o" }, // no status_code field → defaults to 0
+        ]),
+      ),
+    );
+
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_inspect_trace.execute(
+      { trace_id: "abc123" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("❓ unknown");
+    expect(result.output).not.toContain("✅ 200");
+  });
+});

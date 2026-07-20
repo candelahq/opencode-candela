@@ -471,11 +471,139 @@ export function createCandelaTools(
     },
   });
 
+  // ── candela_inspect_trace ───────────────────────────────────────────────
+
+  const inspectTrace = tool({
+    description:
+      "Inspect a specific trace by its trace ID. " +
+      "Shows the full span tree with per-span token breakdown, latency, cost, status, and cache stats. " +
+      "Use this when the user wants to investigate a specific LLM call or debug latency/cost anomalies. " +
+      "Get trace IDs from candela_list_traces first.",
+    args: {
+      trace_id: tool.schema.string().describe("The trace ID to inspect"),
+    },
+    async execute(args) {
+      const traceData = await fetchTrace(candelaUrl, args.trace_id);
+      if (!traceData) {
+        return {
+          title: "Trace Not Found",
+          output: `Could not fetch trace \`${args.trace_id}\`. It may not exist or Candela may be unavailable.`,
+        };
+      }
+
+      const spans = traceData.spans ?? [];
+      if (spans.length === 0) {
+        return {
+          title: "Empty Trace",
+          output: `Trace \`${args.trace_id}\` exists but has no spans.`,
+        };
+      }
+
+      // Aggregate trace-level stats
+      const totalCost = spans.reduce(
+        (sum: number, s: SpanRecord) => sum + s.costUsd,
+        0,
+      );
+      const totalInput = spans.reduce(
+        (sum: number, s: SpanRecord) => sum + s.inputTokens,
+        0,
+      );
+      const totalOutput = spans.reduce(
+        (sum: number, s: SpanRecord) => sum + s.outputTokens,
+        0,
+      );
+      const totalCache = spans.reduce(
+        (sum: number, s: SpanRecord) => sum + s.cacheReadTokens,
+        0,
+      );
+
+      const lines: string[] = [
+        `## Trace \`${args.trace_id.slice(0, 12)}…\``,
+        "",
+        `| Metric | Value |`,
+        `|--------|-------|`,
+        `| Spans | ${spans.length} |`,
+        `| Total Cost | ${formatCost(totalCost)} |`,
+        `| Input Tokens | ${formatTokens(totalInput)} |`,
+        `| Output Tokens | ${formatTokens(totalOutput)} |`,
+      ];
+
+      if (totalCache > 0) {
+        lines.push(`| Cache Read | ${formatTokens(totalCache)} |`);
+        if (totalInput > 0) {
+          const hitRate = Math.min(
+            100,
+            (totalCache / totalInput) * 100,
+          ).toFixed(0);
+          lines.push(`| Cache Hit Rate | ${hitRate}% |`);
+        }
+      }
+
+      // Root span details
+      const root =
+        spans.find(
+          (s: SpanRecord) => !s.parentSpanId || s.parentSpanId === "",
+        ) ?? spans[0];
+      if (root) {
+        lines.push(
+          "",
+          "### Root Span",
+          "",
+          `| Field | Value |`,
+          `|-------|-------|`,
+          `| Model | ${root.model} |`,
+          `| Provider | ${root.provider || "—"} |`,
+          `| Status | ${root.statusCode === 200 ? "✅ 200" : root.statusCode === 0 ? "❓ unknown" : `❌ ${root.statusCode}`} |`,
+          `| Latency | ${formatDuration(root.latencyMs)} |`,
+          `| Cost | ${formatCost(root.costUsd)} |`,
+        );
+
+        if (root.cacheReadTokens > 0 || root.cacheCreationTokens > 0) {
+          lines.push(
+            `| Cache Read | ${formatTokens(root.cacheReadTokens)} |`,
+            `| Cache Write | ${formatTokens(root.cacheCreationTokens)} |`,
+          );
+        }
+      }
+
+      // Span waterfall (if multiple spans)
+      if (spans.length > 1) {
+        lines.push(
+          "",
+          "### Span Waterfall",
+          "",
+          "| # | Span ID | Model | Latency | Cost | Status |",
+          "|---|---------|-------|---------|------|--------|",
+        );
+
+        for (let i = 0; i < spans.length; i++) {
+          const s = spans[i];
+          const depth = s.parentSpanId ? "  └─ " : "";
+          const status =
+            s.statusCode === 200
+              ? "✅"
+              : s.statusCode === 0
+                ? "❓"
+                : `❌${s.statusCode}`;
+          lines.push(
+            `| ${i + 1} | ${depth}${s.spanId.slice(0, 8)} | ${s.model} | ${formatDuration(s.latencyMs)} | ${formatCost(s.costUsd)} | ${status} |`,
+          );
+        }
+      }
+
+      return {
+        title: `Trace: ${formatCost(totalCost)} · ${spans.length} span${spans.length > 1 ? "s" : ""} · ${root?.model ?? "unknown"}`,
+        output: lines.join("\n"),
+      };
+    },
+  });
+
   return {
     candela_cost_summary: costSummary,
     candela_check_budget: checkBudget,
     candela_list_traces: listTraces,
     candela_session_cost: sessionCost,
+    candela_inspect_trace: inspectTrace,
   };
 }
 
@@ -700,4 +828,112 @@ function formatSessionDuration(startTime: Date): string {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return `${hours}h ${mins}m`;
+}
+
+// ── Trace detail types ────────────────────────────────────────────────────────
+
+interface SpanRecord {
+  spanId: string;
+  parentSpanId: string;
+  model: string;
+  provider: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  latencyMs: number;
+  statusCode: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+interface TraceDetail {
+  traceId: string;
+  spans: SpanRecord[];
+}
+
+/**
+ * Fetch a single trace by ID from Candela's GetTrace RPC.
+ * Returns the trace with parsed spans, or null on failure.
+ */
+async function fetchTrace(
+  baseUrl: string,
+  traceId: string,
+): Promise<TraceDetail | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const res = await fetch(`${baseUrl}/candela.v1.TraceService/GetTrace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trace_id: traceId }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+
+    const trace = data.trace;
+    if (!trace) return null;
+
+    const rawSpans: unknown[] = Array.isArray(trace.spans) ? trace.spans : [];
+    const spans: SpanRecord[] = rawSpans
+      .filter(
+        (s): s is Record<string, unknown> => s != null && typeof s === "object",
+      )
+      .map((s) => ({
+        spanId: String(s.spanId ?? s.span_id ?? ""),
+        parentSpanId: String(s.parentSpanId ?? s.parent_span_id ?? ""),
+        model: String(s.model ?? "unknown"),
+        provider: String(s.provider ?? ""),
+        inputTokens: Number(
+          s.inputTokens ??
+            s.input_tokens ??
+            s.genAiInputTokens ??
+            s.gen_ai_input_tokens ??
+            0,
+        ),
+        outputTokens: Number(
+          s.outputTokens ??
+            s.output_tokens ??
+            s.genAiOutputTokens ??
+            s.gen_ai_output_tokens ??
+            0,
+        ),
+        costUsd: Number(s.costUsd ?? s.cost_usd ?? 0),
+        latencyMs: Number(
+          s.latencyMs ?? s.latency_ms ?? s.durationMs ?? s.duration_ms ?? 0,
+        ),
+        statusCode: Number(
+          s.statusCode ??
+            s.status_code ??
+            s.httpStatusCode ??
+            s.http_status_code ??
+            0,
+        ),
+        cacheReadTokens: Number(
+          s.cacheReadTokens ??
+            s.cache_read_tokens ??
+            s.genAiCacheReadTokens ??
+            s.gen_ai_cache_read_tokens ??
+            0,
+        ),
+        cacheCreationTokens: Number(
+          s.cacheCreationTokens ??
+            s.cache_creation_tokens ??
+            s.genAiCacheCreationTokens ??
+            s.gen_ai_cache_creation_tokens ??
+            0,
+        ),
+      }));
+
+    return {
+      traceId: String(trace.traceId ?? trace.trace_id ?? traceId),
+      spans,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
