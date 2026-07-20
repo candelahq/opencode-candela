@@ -689,7 +689,10 @@ async function fetchSessionTraces(
 
 /** Human-readable session duration: "4m 32s" or "1h 12m". */
 function formatSessionDuration(startTime: Date): string {
-  const seconds = Math.max(0, Math.round((Date.now() - startTime.getTime()) / 1000));
+  const seconds = Math.max(
+    0,
+    Math.round((Date.now() - startTime.getTime()) / 1000),
+  );
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const secs = seconds % 60;
