@@ -1,0 +1,397 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CandelaClient } from "../candela-client.js";
+import { createCandelaTools, type SessionState } from "../tools.js";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Build a mock CandelaClient */
+function makeMockClient(
+  dashboardData: Record<string, unknown> | null = null,
+): CandelaClient {
+  return {
+    getDashboardData: vi.fn().mockResolvedValue(dashboardData),
+  } as unknown as CandelaClient;
+}
+
+/** Build a session state accessor */
+function makeSession(
+  overrides: Partial<SessionState> = {},
+): () => SessionState {
+  const state: SessionState = {
+    startTime: overrides.startTime ?? null,
+    toolCalls: overrides.toolCalls ?? 0,
+  };
+  return () => state;
+}
+
+/** Minimal ToolContext stub for execute() calls */
+function makeContext() {
+  return {
+    sessionID: "test-session",
+    messageID: "test-message",
+    agent: "test",
+    directory: "/tmp",
+    worktree: "/tmp",
+    abort: new AbortController().signal,
+    metadata: vi.fn(),
+    ask: vi.fn(),
+  };
+}
+
+/** Build a SearchSpans response with the given spans */
+function makeSpansResponse(
+  spans: Array<{
+    model?: string;
+    provider?: string;
+    input_tokens?: number;
+    output_tokens?: number;
+    cost_usd?: number;
+    latency_ms?: number;
+    timestamp?: string;
+    status_code?: number;
+    cache_read_tokens?: number;
+    cache_creation_tokens?: number;
+  }>,
+) {
+  return {
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        spans: spans.map((s) => ({
+          trace_id: "trace-1",
+          model: s.model ?? "claude-sonnet-4",
+          provider: s.provider ?? "anthropic",
+          input_tokens: s.input_tokens ?? 1000,
+          output_tokens: s.output_tokens ?? 500,
+          cost_usd: s.cost_usd ?? 0.05,
+          latency_ms: s.latency_ms ?? 1200,
+          timestamp: s.timestamp ?? new Date().toISOString(),
+          status_code: s.status_code ?? 200,
+          cache_read_tokens: s.cache_read_tokens ?? 0,
+          cache_creation_tokens: s.cache_creation_tokens ?? 0,
+        })),
+      }),
+  };
+}
+
+/** Build a dashboard response with optional budget */
+function makeDashboard(budget?: {
+  limitUsd?: number;
+  spentUsd?: number;
+  remainingUsd?: number;
+  percentUsed?: number;
+  usedFraction?: number;
+}) {
+  return {
+    usage: {
+      totalTokens: 1000,
+      inputTokens: 500,
+      outputTokens: 500,
+      totalCostUsd: 5,
+      requestCount: 10,
+    },
+    models: [],
+    budget: budget
+      ? {
+          limitUsd: budget.limitUsd ?? 50,
+          spentUsd: budget.spentUsd ?? 10,
+          remainingUsd: budget.remainingUsd ?? 40,
+          percentUsed: budget.percentUsed ?? 20,
+          usedFraction: budget.usedFraction ?? 0.2,
+          isNearLimit: false,
+          isExhausted: false,
+          periodEnd: null,
+          resetLabel: "resets in 12h",
+        }
+      : null,
+    activeGrants: [],
+    totalRemainingUsd: null,
+  };
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("candela_session_cost", () => {
+  const CANDELA_URL = "http://localhost:4100";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Set a stable "now" so session duration calculations are predictable
+    vi.setSystemTime(new Date("2026-07-19T20:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("returns 'No Active Session' when startTime is null", async () => {
+    const client = makeMockClient();
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+
+    const result = await tools.candela_session_cost.execute({}, makeContext());
+
+    expect(result).toEqual(
+      expect.objectContaining({ title: "No Active Session" }),
+    );
+  });
+
+  it("returns 'Candela Unavailable' when fetch fails", async () => {
+    const client = makeMockClient();
+    const sessionStart = new Date("2026-07-19T19:30:00Z");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("connection refused")),
+    );
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = await tools.candela_session_cost.execute({}, makeContext());
+
+    expect(result).toEqual(
+      expect.objectContaining({ title: "Candela Unavailable" }),
+    );
+  });
+
+  it("returns 'No Session Costs' when no spans found", async () => {
+    const client = makeMockClient();
+    const sessionStart = new Date("2026-07-19T19:55:00Z"); // 5 min ago
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSpansResponse([])));
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = await tools.candela_session_cost.execute({}, makeContext());
+
+    expect(result).toEqual(
+      expect.objectContaining({ title: "No Session Costs" }),
+    );
+    expect((result as { output: string }).output).toContain("5m 0s ago");
+  });
+
+  it("aggregates cost, tokens, and call count from traces", async () => {
+    const client = makeMockClient(makeDashboard());
+    const sessionStart = new Date("2026-07-19T19:50:00Z"); // 10 min ago
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSpansResponse([
+          {
+            model: "claude-sonnet-4",
+            input_tokens: 2000,
+            output_tokens: 800,
+            cost_usd: 0.12,
+            latency_ms: 1500,
+          },
+          {
+            model: "claude-sonnet-4",
+            input_tokens: 1500,
+            output_tokens: 600,
+            cost_usd: 0.08,
+            latency_ms: 900,
+          },
+          {
+            model: "gpt-4.1-nano",
+            input_tokens: 500,
+            output_tokens: 200,
+            cost_usd: 0.01,
+            latency_ms: 300,
+          },
+        ]),
+      ),
+    );
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = (await tools.candela_session_cost.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    // Title should contain total cost and call count
+    expect(result.title).toContain("3 calls");
+    expect(result.title).toContain("10m 0s");
+
+    // Output table should contain aggregated values
+    expect(result.output).toContain("LLM Calls | 3");
+    expect(result.output).toContain("Input Tokens");
+    expect(result.output).toContain("Output Tokens");
+    expect(result.output).toContain("Avg Latency");
+    expect(result.output).toContain("Cost/Call");
+  });
+
+  it("shows per-model breakdown sorted by cost descending", async () => {
+    const client = makeMockClient(makeDashboard());
+    const sessionStart = new Date("2026-07-19T19:50:00Z");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSpansResponse([
+          { model: "claude-sonnet-4", cost_usd: 0.15 },
+          { model: "gpt-4.1-nano", cost_usd: 0.01 },
+          { model: "claude-sonnet-4", cost_usd: 0.1 },
+        ]),
+      ),
+    );
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = (await tools.candela_session_cost.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    // Per-model section should exist
+    expect(result.output).toContain("Per-Model Breakdown");
+
+    // claude-sonnet-4 should appear before gpt-4.1-nano (higher cost)
+    const claudeIdx = result.output.indexOf("claude-sonnet-4");
+    const nanoIdx = result.output.indexOf("gpt-4.1-nano");
+    expect(claudeIdx).toBeLessThan(nanoIdx);
+
+    // claude should show 2 calls
+    const claudeLine = result.output
+      .split("\n")
+      .find((l: string) => l.includes("claude-sonnet-4"));
+    expect(claudeLine).toContain("2");
+  });
+
+  it("clamps cache hit rate to 100%", async () => {
+    const client = makeMockClient(makeDashboard());
+    const sessionStart = new Date("2026-07-19T19:50:00Z");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        makeSpansResponse([
+          {
+            input_tokens: 500,
+            cache_read_tokens: 800, // exceeds input!
+          },
+        ]),
+      ),
+    );
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = (await tools.candela_session_cost.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("Cache Hit Rate | 100%");
+    expect(result.output).not.toMatch(/Cache Hit Rate \| 1[0-9][1-9]%/);
+  });
+
+  it("includes budget context when available", async () => {
+    const client = makeMockClient(
+      makeDashboard({
+        limitUsd: 100,
+        remainingUsd: 60,
+        percentUsed: 40,
+      }),
+    );
+    const sessionStart = new Date("2026-07-19T19:50:00Z");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(makeSpansResponse([{ cost_usd: 0.05 }])),
+    );
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = (await tools.candela_session_cost.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("Budget");
+    expect(result.output).toContain("remaining");
+    expect(result.output).toContain("40%");
+  });
+
+  it("handles HTTP error from SearchSpans gracefully", async () => {
+    const client = makeMockClient();
+    const sessionStart = new Date("2026-07-19T19:50:00Z");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 500 }),
+    );
+
+    const tools = createCandelaTools(
+      client,
+      CANDELA_URL,
+      makeSession({ startTime: sessionStart }),
+    );
+
+    const result = await tools.candela_session_cost.execute({}, makeContext());
+
+    expect(result).toEqual(
+      expect.objectContaining({ title: "Candela Unavailable" }),
+    );
+  });
+});
+
+// ── makeTimeRangeFromDate ─────────────────────────────────────────────────────
+
+describe("makeTimeRangeFromDate", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T20:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("creates a time range from the given date to now", async () => {
+    const { makeTimeRangeFromDate } = await import("../candela-client.js");
+
+    const start = new Date("2026-07-19T19:30:00Z");
+    const result = makeTimeRangeFromDate(start);
+
+    const tr = result.time_range as {
+      start: { seconds: string };
+      end: { seconds: string };
+    };
+    const startSec = Number(tr.start.seconds);
+    const endSec = Number(tr.end.seconds);
+
+    // start should match the provided date
+    expect(startSec).toBe(Math.floor(start.getTime() / 1000));
+    // end should match "now" (2026-07-19T20:00:00Z)
+    expect(endSec).toBe(
+      Math.floor(new Date("2026-07-19T20:00:00Z").getTime() / 1000),
+    );
+    // 30 minute gap
+    expect(endSec - startSec).toBe(1800);
+  });
+});
