@@ -106,13 +106,22 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
   // Track per-session state
   let sessionStartTime: Date | null = null;
-  let _sessionToolCalls = 0;
+  let sessionToolCalls = 0;
+  let sessionId: string | null = null;
+
+  /** Accessor for session state — tools read this lazily. */
+  const getSession = () => ({
+    startTime: sessionStartTime,
+    toolCalls: sessionToolCalls,
+  });
 
   // ── Custom tools ──────────────────────────────────────────────────────────
   // Register tools that the AI agent can call conversationally.
   // Phase 1: Cost queries — "how much have I spent today?"
   // Phase 2: Config management — "add claude sonnet 4 through candela"
-  const costTools = alive ? createCandelaTools(candela, candelaUrl) : undefined;
+  const costTools = alive
+    ? createCandelaTools(candela, candelaUrl, getSession)
+    : undefined;
   const configTools = createConfigTools(candela, candelaUrl);
   const tools = { ...configTools, ...costTools };
   // Phase 3: Context injection — cost awareness in system prompt
@@ -130,6 +139,9 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       if (!alive) return;
       output.env.CANDELA_PROXY_URL = candelaUrl;
       output.env.OPENAI_BASE_URL = `${candelaUrl}/proxy/openai/v1`;
+      if (sessionId) {
+        output.env.CANDELA_SESSION_ID = sessionId;
+      }
     },
 
     /**
@@ -141,10 +153,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       // Track session start — clear cache for fresh data
       if (event.type === "session.created") {
         sessionStartTime = new Date();
-        _sessionToolCalls = 0;
+        sessionToolCalls = 0;
+        sessionId = crypto.randomUUID();
         candela.resetHealth();
         candela.invalidateCache();
         context?.resetSession();
+
+        await client.app.log({
+          body: {
+            service: "opencode-candela",
+            level: "debug",
+            message: `📍 Session ${sessionId.slice(0, 8)} started`,
+          },
+        });
       }
 
       // Show cost + budget summary when session goes idle
@@ -210,7 +231,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
      * Track tool executions for session attribution.
      */
     "tool.execute.after": async () => {
-      _sessionToolCalls++;
+      sessionToolCalls++;
     },
 
     /**
