@@ -30,6 +30,8 @@ export const tui: TuiPlugin = async (api) => {
   let lastRefresh = 0;
   let sessionCalls = 0;
   let sessionCostUsd = 0;
+  let baselineCalls: number | null = null;
+  let baselineCostUsd: number | null = null;
 
   async function refresh() {
     const now = Date.now();
@@ -56,8 +58,23 @@ export const tui: TuiPlugin = async (api) => {
       }
 
       totalCost24h = data.usage.totalCostUsd ?? 0;
-      sessionCalls = data.usage.requestCount ?? 0;
-      sessionCostUsd = data.usage.totalCostUsd ?? 0;
+
+      // Capture baseline on first refresh so we show session-only deltas,
+      // not the rolling 24h totals.
+      if (baselineCalls === null) {
+        baselineCalls = data.usage.requestCount ?? 0;
+      }
+      if (baselineCostUsd === null) {
+        baselineCostUsd = data.usage.totalCostUsd ?? 0;
+      }
+      sessionCalls = Math.max(
+        0,
+        (data.usage.requestCount ?? 0) - baselineCalls,
+      );
+      sessionCostUsd = Math.max(
+        0,
+        (data.usage.totalCostUsd ?? 0) - baselineCostUsd,
+      );
 
       if (data.models) {
         topModels = data.models

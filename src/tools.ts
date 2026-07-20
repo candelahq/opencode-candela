@@ -530,6 +530,13 @@ export function createCandelaTools(
 
       if (totalCache > 0) {
         lines.push(`| Cache Read | ${formatTokens(totalCache)} |`);
+        if (totalInput > 0) {
+          const hitRate = Math.min(
+            100,
+            (totalCache / totalInput) * 100,
+          ).toFixed(0);
+          lines.push(`| Cache Hit Rate | ${hitRate}% |`);
+        }
       }
 
       // Root span details
@@ -546,7 +553,7 @@ export function createCandelaTools(
           `|-------|-------|`,
           `| Model | ${root.model} |`,
           `| Provider | ${root.provider || "—"} |`,
-          `| Status | ${root.statusCode === 200 ? "✅ 200" : `❌ ${root.statusCode}`} |`,
+          `| Status | ${root.statusCode === 200 ? "✅ 200" : root.statusCode === 0 ? "❓ unknown" : `❌ ${root.statusCode}`} |`,
           `| Latency | ${formatDuration(root.latencyMs)} |`,
           `| Cost | ${formatCost(root.costUsd)} |`,
         );
@@ -572,7 +579,12 @@ export function createCandelaTools(
         for (let i = 0; i < spans.length; i++) {
           const s = spans[i];
           const depth = s.parentSpanId ? "  └─ " : "";
-          const status = s.statusCode === 200 ? "✅" : `❌${s.statusCode}`;
+          const status =
+            s.statusCode === 200
+              ? "✅"
+              : s.statusCode === 0
+                ? "❓"
+                : `❌${s.statusCode}`;
           lines.push(
             `| ${i + 1} | ${depth}${s.spanId.slice(0, 8)} | ${s.model} | ${formatDuration(s.latencyMs)} | ${formatCost(s.costUsd)} | ${status} |`,
           );
@@ -864,7 +876,7 @@ async function fetchTrace(
     const trace = data.trace;
     if (!trace) return null;
 
-    const rawSpans: unknown[] = trace.spans ?? [];
+    const rawSpans: unknown[] = Array.isArray(trace.spans) ? trace.spans : [];
     const spans: SpanRecord[] = rawSpans
       .filter(
         (s): s is Record<string, unknown> => s != null && typeof s === "object",
@@ -897,7 +909,7 @@ async function fetchTrace(
             s.status_code ??
             s.httpStatusCode ??
             s.http_status_code ??
-            200,
+            0,
         ),
         cacheReadTokens: Number(
           s.cacheReadTokens ??
