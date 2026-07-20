@@ -49,6 +49,8 @@ export interface Mission {
   createdAt: string;
   /** ISO 8601 completion/cancellation timestamp. */
   completedAt?: string;
+  /** ISO 8601 timestamp of last milestone status change. Used for staleness detection. */
+  lastActivityAt?: string;
 }
 
 /** Root storage shape for the missions JSON file. */

@@ -71,13 +71,13 @@ export function getActiveMission(path = DEFAULT_PATH): Mission | null {
  */
 export function updateMission(
   missionId: string,
-  updater: (mission: Mission) => void,
+  updater: (mission: Mission, store: MissionStore) => void,
   path = DEFAULT_PATH,
 ): void {
   const store = readMissions(path);
   const mission = store.missions.find((m) => m.id === missionId);
   if (!mission) return;
-  updater(mission);
+  updater(mission, store);
   writeMissions(store, path);
 }
 

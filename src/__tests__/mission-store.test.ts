@@ -184,6 +184,29 @@ describe("mission-store", () => {
     expect(store.missions[0].title).toBe("Test Mission");
   });
 
+  it("updater can modify store-level properties like activeMissionId", () => {
+    const mission = makeMission();
+    addMission(mission, TEST_PATH);
+
+    // Verify active before
+    expect(readMissions(TEST_PATH).activeMissionId).toBe(mission.id);
+
+    // Use store param to clear activeMissionId
+    updateMission(
+      mission.id,
+      (m, store) => {
+        m.status = "completed";
+        m.completedAt = new Date().toISOString();
+        store.activeMissionId = null;
+      },
+      TEST_PATH,
+    );
+
+    const result = readMissions(TEST_PATH);
+    expect(result.activeMissionId).toBeNull();
+    expect(result.missions[0].status).toBe("completed");
+  });
+
   // ── pruneCompleted ──────────────────────────────────────────────────
 
   it("prunes completed missions older than N days", () => {

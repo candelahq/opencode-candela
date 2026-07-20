@@ -328,7 +328,7 @@ describe("mission-tools", () => {
 
   // ── end-to-end flow ─────────────────────────────────────────────────
 
-  it("completes a full mission lifecycle", async () => {
+  it("completes a full mission lifecycle and clears activeMissionId", async () => {
     const client = makeMockClient();
     const tools = createMissionTools(client, TEST_PATH);
 
@@ -350,16 +350,92 @@ describe("mission-tools", () => {
     await tools.mission_next.execute({}, makeContext());
     await tools.mission_validate.execute({}, makeContext());
 
-    // Check completion
-    const nextResult = (await tools.mission_next.execute(
-      {},
+    // Prove activeMissionId was cleared by creating a new mission
+    const planResult = (await tools.mission_plan.execute(
+      {
+        goal: "New project",
+        title: "New",
+        milestones: [{ title: "Step 1" }],
+      },
       makeContext(),
     )) as { title: string };
 
-    // Should indicate all done or no active mission
-    expect(
-      nextResult.title === "Mission Complete" ||
-        nextResult.title === "No Active Mission",
-    ).toBe(true);
+    // Should succeed, not "Mission Already Active"
+    expect(planResult.title).toContain("New");
+    expect(planResult.title).not.toBe("Mission Already Active");
+  });
+
+  // ── concurrent milestone guard ──────────────────────────────────────
+
+  it("blocks mission_next when a milestone is already working", async () => {
+    const client = makeMockClient();
+    const tools = createMissionTools(client, TEST_PATH);
+
+    await tools.mission_plan.execute(
+      {
+        goal: "Build API",
+        title: "API",
+        milestones: [{ title: "Step 1" }, { title: "Step 2" }],
+      },
+      makeContext(),
+    );
+
+    // Start first milestone
+    await tools.mission_next.execute({}, makeContext());
+
+    // Try to start second — should be blocked
+    const result = (await tools.mission_next.execute({}, makeContext())) as {
+      title: string;
+    };
+
+    expect(result.title).toBe("Milestone Already Active");
+  });
+
+  // ── mission_validate with status arg ────────────────────────────────
+
+  it("marks milestone as done via status arg", async () => {
+    const client = makeMockClient();
+    const tools = createMissionTools(client, TEST_PATH);
+
+    await tools.mission_plan.execute(
+      {
+        goal: "Build API",
+        title: "API",
+        milestones: [{ title: "Tests", test_command: "npm test" }],
+      },
+      makeContext(),
+    );
+    await tools.mission_next.execute({}, makeContext());
+
+    const result = (await tools.mission_validate.execute(
+      { status: "done" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toContain("✅");
+    expect(result.output).toContain("done");
+  });
+
+  it("marks milestone as failed via status arg", async () => {
+    const client = makeMockClient();
+    const tools = createMissionTools(client, TEST_PATH);
+
+    await tools.mission_plan.execute(
+      {
+        goal: "Build API",
+        title: "API",
+        milestones: [{ title: "Tests", test_command: "npm test" }],
+      },
+      makeContext(),
+    );
+    await tools.mission_next.execute({}, makeContext());
+
+    const result = (await tools.mission_validate.execute(
+      { status: "failed" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toContain("❌");
+    expect(result.output).toContain("failed");
   });
 });

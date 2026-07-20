@@ -160,8 +160,19 @@ export function createContextHook(
         const done = mission.milestones.filter(
           (m) => m.status === "done",
         ).length;
+
+        // Staleness check: warn if no activity for 24h
+        const lastActivity = mission.lastActivityAt ?? mission.createdAt;
+        const staleHours = Math.floor(
+          (Date.now() - new Date(lastActivity).getTime()) / (1000 * 60 * 60),
+        );
+        const staleWarning =
+          staleHours >= 24
+            ? `\n⚠️ STALE: No activity for ${staleHours}h. Use mission_status to review and mission_cancel to clean up.`
+            : "";
+
         output.system.push(
-          `[Mission] "${mission.title}" (${done}/${mission.milestones.length})\n${milestoneList}\nTools: mission_plan, mission_next, mission_validate, mission_status, mission_cancel`,
+          `[Mission] "${mission.title}" (${done}/${mission.milestones.length})\n${milestoneList}\nTools: mission_plan, mission_next, mission_validate, mission_status, mission_cancel${staleWarning}`,
         );
       }
     }

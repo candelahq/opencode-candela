@@ -10,9 +10,7 @@ import { tool } from "@opencode-ai/plugin";
 import {
   addMission,
   getActiveMission,
-  readMissions,
   updateMission,
-  writeMissions,
 } from "./mission-store.js";
 import { MILESTONE_ICONS, type Milestone, type Mission } from "./types.js";
 
@@ -98,6 +96,7 @@ export function createMissionTools(
           status: "pending",
         })),
         createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
       };
 
       const added = addMission(mission, storePath);
@@ -141,6 +140,17 @@ export function createMissionTools(
         };
       }
 
+      // Prevent concurrent milestones
+      const activeMilestone = mission.milestones.find(
+        (m) => m.status === "working" || m.status === "validating",
+      );
+      if (activeMilestone) {
+        return {
+          title: "Milestone Already Active",
+          output: `There is already an active milestone: "${activeMilestone.title}" (${activeMilestone.status}).\nComplete or validate it before starting the next one.`,
+        };
+      }
+
       const milestone = mission.milestones.find((m) => m.status === "pending");
       if (!milestone) {
         const allDone = mission.milestones.every((m) => m.status === "done");
@@ -158,6 +168,7 @@ export function createMissionTools(
         (m) => {
           const ms = m.milestones.find((x) => x.id === milestone.id);
           if (ms) ms.status = "working";
+          m.lastActivityAt = new Date().toISOString();
         },
         storePath,
       );
@@ -224,13 +235,20 @@ export function createMissionTools(
     description:
       "Validate a milestone by running its test command. " +
       "If the milestone has no test command, it's marked as done. " +
-      "Validates the first 'working' milestone by default.",
+      "Validates the first 'working' or 'validating' milestone by default. " +
+      "Pass status='done' or status='failed' to record the test result.",
     args: {
       milestone_id: tool.schema
         .string()
         .optional()
         .describe(
-          "Specific milestone ID to validate (defaults to first working)",
+          "Specific milestone ID to validate (defaults to first working/validating)",
+        ),
+      status: tool.schema
+        .enum(["done", "failed"])
+        .optional()
+        .describe(
+          "The validation result: 'done' if tests passed, 'failed' if they failed",
         ),
     },
     async execute(args) {
@@ -244,7 +262,9 @@ export function createMissionTools(
 
       const milestone = args.milestone_id
         ? mission.milestones.find((m) => m.id === args.milestone_id)
-        : mission.milestones.find((m) => m.status === "working");
+        : mission.milestones.find(
+            (m) => m.status === "working" || m.status === "validating",
+          );
 
       if (!milestone) {
         return {
@@ -254,22 +274,50 @@ export function createMissionTools(
         };
       }
 
+      // If status is provided, apply it directly (agent reporting test result)
+      if (args.status) {
+        const newStatus = args.status;
+        updateMission(
+          mission.id,
+          (m, store) => {
+            const ms = m.milestones.find((x) => x.id === milestone.id);
+            if (ms) ms.status = newStatus;
+            m.lastActivityAt = new Date().toISOString();
+
+            // Check if all milestones are done → complete mission
+            if (
+              newStatus === "done" &&
+              m.milestones.every((x) => x.status === "done")
+            ) {
+              m.status = "completed";
+              m.completedAt = new Date().toISOString();
+              store.activeMissionId = null;
+            }
+          },
+          storePath,
+        );
+
+        const icon = newStatus === "done" ? "✅" : "❌";
+        return {
+          title: `${icon} ${milestone.title}`,
+          output: `Milestone "${milestone.title}" marked as ${newStatus}.`,
+        };
+      }
+
       if (!milestone.testCommand) {
         // No test command — mark as done directly
         updateMission(
           mission.id,
-          (m) => {
+          (m, store) => {
             const ms = m.milestones.find((x) => x.id === milestone.id);
             if (ms) ms.status = "done";
+            m.lastActivityAt = new Date().toISOString();
 
-            // Check if all milestones are done
+            // Check if all milestones are done → complete mission
             if (m.milestones.every((x) => x.status === "done")) {
               m.status = "completed";
               m.completedAt = new Date().toISOString();
-              // Clear active mission
-              const store = readMissions(storePath);
               store.activeMissionId = null;
-              writeMissions(store, storePath);
             }
           },
           storePath,
@@ -287,6 +335,7 @@ export function createMissionTools(
         (m) => {
           const ms = m.milestones.find((x) => x.id === milestone.id);
           if (ms) ms.status = "validating";
+          m.lastActivityAt = new Date().toISOString();
         },
         storePath,
       );
@@ -300,9 +349,7 @@ export function createMissionTools(
           milestone.testCommand,
           "```",
           "",
-          `Then mark the result:`,
-          `- If tests pass, I'll mark it ✅ done`,
-          `- If tests fail, I'll mark it ❌ failed`,
+          `Then call \`mission_validate\` with status='done' or status='failed'.`,
         ].join("\n"),
       };
     },
@@ -356,11 +403,12 @@ export function createMissionTools(
         };
       }
 
-      // Abort running child sessions
-      const workingMilestones = mission.milestones.filter(
-        (m) => m.status === "working" && m.sessionId,
+      // Abort running child sessions (working OR validating)
+      const activeMilestones = mission.milestones.filter(
+        (m) =>
+          (m.status === "working" || m.status === "validating") && m.sessionId,
       );
-      for (const ms of workingMilestones) {
+      for (const ms of activeMilestones) {
         try {
           await client.session.abort({
             sessionID: ms.sessionId!,
@@ -370,24 +418,21 @@ export function createMissionTools(
         }
       }
 
-      // Update mission status
+      // Update mission status and clear active in one atomic write
       updateMission(
         mission.id,
-        (m) => {
+        (m, store) => {
           m.status = "cancelled";
           m.completedAt = new Date().toISOString();
+          m.lastActivityAt = new Date().toISOString();
+          store.activeMissionId = null;
         },
         storePath,
       );
 
-      // Clear active mission
-      const store = readMissions(storePath);
-      store.activeMissionId = null;
-      writeMissions(store, storePath);
-
       return {
         title: "Mission Cancelled",
-        output: `Mission "${mission.title}" has been cancelled.${workingMilestones.length > 0 ? ` Aborted ${workingMilestones.length} running session(s).` : ""}`,
+        output: `Mission "${mission.title}" has been cancelled.${activeMilestones.length > 0 ? ` Aborted ${activeMilestones.length} running session(s).` : ""}`,
       };
     },
   });
