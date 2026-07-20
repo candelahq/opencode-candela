@@ -10,6 +10,8 @@
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
+import { getActiveMission } from "./mission-store.js";
+import { MILESTONE_ICONS } from "./types.js";
 import { formatCost } from "./utils.js";
 
 export const tui: TuiPlugin = async (api) => {
@@ -123,7 +125,28 @@ export const tui: TuiPlugin = async (api) => {
             ]
           : [];
 
-        return [budgetLine, costLine, ...modelLines].join(
+        // Mission progress (reads same file as server plugin)
+        const missionLines: string[] = [];
+        try {
+          const mission = getActiveMission();
+          if (mission) {
+            const done = mission.milestones.filter(
+              (m) => m.status === "done",
+            ).length;
+            missionLines.push(
+              "",
+              "────────────────────",
+              `📋 ${mission.title} (${done}/${mission.milestones.length})`,
+              ...mission.milestones.map(
+                (m) => `  ${MILESTONE_ICONS[m.status]} ${m.title}`,
+              ),
+            );
+          }
+        } catch {
+          // Non-fatal
+        }
+
+        return [budgetLine, costLine, ...modelLines, ...missionLines].join(
           "\n",
         ) as unknown as null;
       },

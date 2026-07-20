@@ -18,6 +18,8 @@
  */
 
 import type { CandelaClient } from "./candela-client.js";
+import type { Mission } from "./types.js";
+import { MILESTONE_ICONS } from "./types.js";
 import { formatCost } from "./utils.js";
 
 // Models considered "cheap" for cost-aware recommendations
@@ -53,7 +55,10 @@ function budgetGuidance(fraction: number): string {
  * Throttled: only injects on every call when budget ≥ 80%. Below that,
  * only the first call of a session gets context (saves ~100 tokens/msg).
  */
-export function createContextHook(candela: CandelaClient) {
+export function createContextHook(
+  candela: CandelaClient,
+  getActiveMission?: () => Mission | null,
+) {
   // Cache to avoid hammering the API on every message
   let cachedContext: string | null = null;
   let cachedFraction = 0;
@@ -144,6 +149,22 @@ export function createContextHook(candela: CandelaClient) {
       : " For simple tasks (formatting, small edits), consider cheaper models.";
 
     output.system.push(`${cachedContext} ${modelContext}${suggestion}`);
+
+    // Inject mission context (compact, <500 chars)
+    if (getActiveMission) {
+      const mission = getActiveMission();
+      if (mission) {
+        const milestoneList = mission.milestones
+          .map((m) => `${MILESTONE_ICONS[m.status]} ${m.title}`)
+          .join("  ");
+        const done = mission.milestones.filter(
+          (m) => m.status === "done",
+        ).length;
+        output.system.push(
+          `[Mission] "${mission.title}" (${done}/${mission.milestones.length})\n${milestoneList}\nTools: mission_plan, mission_next, mission_validate, mission_status, mission_cancel`,
+        );
+      }
+    }
   };
 
   return {
