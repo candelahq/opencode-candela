@@ -154,6 +154,22 @@ export function makeTimeRange(hours: number): Record<string, unknown> {
   };
 }
 
+/** Build a ConnectRPC TimeRange JSON body from a start Date to now. */
+export function makeTimeRangeFromDate(
+  startDate: Date,
+): Record<string, unknown> {
+  const now = new Date();
+  return {
+    time_range: {
+      start: {
+        seconds: String(Math.floor(startDate.getTime() / 1000)),
+        nanos: 0,
+      },
+      end: { seconds: String(Math.floor(now.getTime() / 1000)), nanos: 0 },
+    },
+  };
+}
+
 /** Parse raw proto3 JSON model array into ModelUsage[]. */
 function parseModels(raw: unknown[]): ModelUsage[] {
   if (!Array.isArray(raw)) return [];

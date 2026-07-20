@@ -14,7 +14,7 @@
 
 import { tool } from "@opencode-ai/plugin";
 import type { CandelaClient } from "./candela-client.js";
-import { makeTimeRange } from "./candela-client.js";
+import { makeTimeRange, makeTimeRangeFromDate } from "./candela-client.js";
 import {
   budgetBar,
   formatCost,
@@ -41,12 +41,27 @@ interface TraceRecord {
 // ── Tool Factories ────────────────────────────────────────────────────────────
 
 /**
+ * Session state accessor — provided by index.ts so tools can query
+ * session-scoped data without owning the lifecycle.
+ */
+export interface SessionState {
+  /** When the current session started, or null if no active session. */
+  startTime: Date | null;
+  /** Number of tool calls in this session. */
+  toolCalls: number;
+}
+
+/**
  * Create all Candela custom tools bound to a CandelaClient instance.
  *
  * Tools are created as a factory so they share the same client
  * (and its cache/health state) as the rest of the plugin.
  */
-export function createCandelaTools(candela: CandelaClient, candelaUrl: string) {
+export function createCandelaTools(
+  candela: CandelaClient,
+  candelaUrl: string,
+  getSession: () => SessionState,
+) {
   // ── candela_cost_summary ──────────────────────────────────────────────────
 
   const costSummary = tool({
@@ -338,10 +353,129 @@ export function createCandelaTools(candela: CandelaClient, candelaUrl: string) {
     },
   });
 
+  // ── candela_session_cost ────────────────────────────────────────────────
+
+  const sessionCost = tool({
+    description:
+      "Get the cost of the current coding session. " +
+      "Shows total spend, token usage, per-model breakdown, and cache stats since the session started. " +
+      "Use this when the user asks about current session cost, this session's spending, or how much this conversation cost.",
+    args: {},
+    async execute() {
+      const session = getSession();
+      if (!session.startTime) {
+        return {
+          title: "No Active Session",
+          output:
+            "No active session detected. Session tracking starts when you begin a conversation.",
+        };
+      }
+
+      // Fetch spans from session start to now
+      const traces = await fetchSessionTraces(candelaUrl, session.startTime);
+      if (!traces) {
+        return {
+          title: "Candela Unavailable",
+          output: "Could not fetch session data. Make sure Candela is running.",
+        };
+      }
+
+      if (traces.length === 0) {
+        const elapsed = formatSessionDuration(session.startTime);
+        return {
+          title: "No Session Costs",
+          output: `Session started ${elapsed} ago but no LLM calls recorded yet.`,
+        };
+      }
+
+      // Aggregate
+      const totalCost = traces.reduce((sum, t) => sum + t.costUsd, 0);
+      const totalInput = traces.reduce((sum, t) => sum + t.inputTokens, 0);
+      const totalOutput = traces.reduce((sum, t) => sum + t.outputTokens, 0);
+      const totalCacheRead = traces.reduce(
+        (sum, t) => sum + t.cacheReadTokens,
+        0,
+      );
+      const avgLatency =
+        traces.reduce((sum, t) => sum + t.latencyMs, 0) / traces.length;
+      const elapsed = formatSessionDuration(session.startTime);
+
+      const lines: string[] = [
+        `## Session Cost (${elapsed})`,
+        "",
+        `| Metric | Value |`,
+        `|--------|-------|`,
+        `| Total Cost | ${formatCost(totalCost)} |`,
+        `| LLM Calls | ${traces.length} |`,
+        `| Input Tokens | ${formatTokens(totalInput)} |`,
+        `| Output Tokens | ${formatTokens(totalOutput)} |`,
+        `| Avg Latency | ${formatDuration(avgLatency)} |`,
+        `| Cost/Call | ${formatCost(totalCost / traces.length)} |`,
+      ];
+
+      // Cache stats
+      if (totalCacheRead > 0 && totalInput > 0) {
+        const hitRate = Math.min(
+          100,
+          (totalCacheRead / totalInput) * 100,
+        ).toFixed(0);
+        lines.push(`| Cache Hit Rate | ${hitRate}% |`);
+      }
+
+      // Per-model breakdown
+      const byModel = new Map<
+        string,
+        { cost: number; calls: number; tokens: number }
+      >();
+      for (const t of traces) {
+        const key = t.model || "unknown";
+        const existing = byModel.get(key) ?? { cost: 0, calls: 0, tokens: 0 };
+        existing.cost += t.costUsd;
+        existing.calls += 1;
+        existing.tokens += t.inputTokens + t.outputTokens;
+        byModel.set(key, existing);
+      }
+
+      if (byModel.size > 0) {
+        lines.push(
+          "",
+          "### Per-Model Breakdown",
+          "",
+          "| Model | Cost | Calls | Tokens |",
+          "|-------|------|-------|--------|",
+        );
+        const sorted = [...byModel.entries()].sort(
+          (a, b) => b[1].cost - a[1].cost,
+        );
+        for (const [model, stats] of sorted) {
+          lines.push(
+            `| ${model} | ${formatCost(stats.cost)} | ${stats.calls} | ${formatTokens(stats.tokens)} |`,
+          );
+        }
+      }
+
+      // Budget context
+      const data = await candela.getDashboardData(24);
+      if (data?.budget) {
+        const b = data.budget;
+        lines.push(
+          "",
+          `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} (${b.percentUsed.toFixed(0)}% used)`,
+        );
+      }
+
+      return {
+        title: `Session: ${formatCost(totalCost)} (${traces.length} calls, ${elapsed})`,
+        output: lines.join("\n"),
+      };
+    },
+  });
+
   return {
     candela_cost_summary: costSummary,
     candela_check_budget: checkBudget,
     candela_list_traces: listTraces,
+    candela_session_cost: sessionCost,
   };
 }
 
@@ -455,4 +589,112 @@ async function fetchTraces(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Fetch all traces from a session start time to now.
+ * Uses the same SearchSpans RPC but scoped to the session window.
+ */
+async function fetchSessionTraces(
+  baseUrl: string,
+  sessionStart: Date,
+): Promise<TraceRecord[] | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const body: Record<string, unknown> = {
+      ...makeTimeRangeFromDate(sessionStart),
+      page_size: 200, // generous limit for a single session
+    };
+
+    const res = await fetch(
+      `${baseUrl}/candela.v1.DashboardService/SearchSpans`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      },
+    );
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    const spans: unknown[] = data.spans ?? [];
+
+    const traces: TraceRecord[] = spans
+      .filter(
+        (s): s is Record<string, unknown> => s != null && typeof s === "object",
+      )
+      .map((s) => ({
+        traceId: String(s.traceId ?? s.trace_id ?? ""),
+        model: String(s.model ?? "unknown"),
+        provider: String(s.provider ?? ""),
+        inputTokens: Number(
+          s.inputTokens ??
+            s.input_tokens ??
+            s.genAiInputTokens ??
+            s.gen_ai_input_tokens ??
+            0,
+        ),
+        outputTokens: Number(
+          s.outputTokens ??
+            s.output_tokens ??
+            s.genAiOutputTokens ??
+            s.gen_ai_output_tokens ??
+            0,
+        ),
+        costUsd: Number(s.costUsd ?? s.cost_usd ?? 0),
+        latencyMs: Number(
+          s.latencyMs ?? s.latency_ms ?? s.durationMs ?? s.duration_ms ?? 0,
+        ),
+        timestamp: String(s.timestamp ?? s.startTime ?? s.start_time ?? ""),
+        statusCode: Number(
+          s.statusCode ??
+            s.status_code ??
+            s.httpStatusCode ??
+            s.http_status_code ??
+            200,
+        ),
+        cacheReadTokens: Number(
+          s.cacheReadTokens ??
+            s.cache_read_tokens ??
+            s.genAiCacheReadTokens ??
+            s.gen_ai_cache_read_tokens ??
+            0,
+        ),
+        cacheCreationTokens: Number(
+          s.cacheCreationTokens ??
+            s.cache_creation_tokens ??
+            s.genAiCacheCreationTokens ??
+            s.gen_ai_cache_creation_tokens ??
+            0,
+        ),
+      }));
+
+    // Sort by timestamp ascending for session narrative
+    traces.sort((a, b) => {
+      const ta = new Date(a.timestamp).getTime();
+      const tb = new Date(b.timestamp).getTime();
+      return (Number.isNaN(ta) ? 0 : ta) - (Number.isNaN(tb) ? 0 : tb);
+    });
+
+    return traces;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Human-readable session duration: "4m 32s" or "1h 12m". */
+function formatSessionDuration(startTime: Date): string {
+  const seconds = Math.round((Date.now() - startTime.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${secs}s`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins}m`;
 }
