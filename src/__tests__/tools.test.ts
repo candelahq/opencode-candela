@@ -20,6 +20,7 @@ function makeSession(
   const state: SessionState = {
     startTime: overrides.startTime ?? null,
     toolCalls: overrides.toolCalls ?? 0,
+    id: overrides.id ?? null,
   };
   return () => state;
 }

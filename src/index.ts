@@ -110,11 +110,13 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionStartTime: Date | null = null;
   let sessionToolCalls = 0;
   let sessionId: string | null = null;
+  let sessionBaselineCost: number | null = null;
 
   /** Accessor for session state — tools read this lazily. */
   const getSession = () => ({
     startTime: sessionStartTime,
     toolCalls: sessionToolCalls,
+    id: sessionId,
   });
 
   // ── Custom tools ──────────────────────────────────────────────────────────
@@ -159,19 +161,38 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     },
 
     /**
+     * Inject X-Session-Id header into LLM proxy requests.
+     * This ties each LLM call to the current OpenCode session in Candela,
+     * enabling per-session cost queries and trace filtering.
+     */
+    "chat.headers": async (_input, output) => {
+      if (!alive || !sessionId) return;
+      output.headers["X-Session-Id"] = sessionId;
+    },
+
+    /**
      * Listen for events to track session lifecycle and show cost toasts.
      */
     event: async ({ event }) => {
       if (!alive) return;
 
-      // Track session start — clear cache for fresh data
+      // Track session start — use OpenCode's real session ID
       if (event.type === "session.created") {
         sessionStartTime = new Date();
         sessionToolCalls = 0;
-        sessionId = crypto.randomUUID();
+        // Use OpenCode's session ID if available, fall back to UUID
+        const info = (event as { properties?: { info?: { id?: string } } })
+          .properties?.info;
+        sessionId = info?.id ?? crypto.randomUUID();
+        sessionBaselineCost = null;
         candela.resetHealth();
         candela.invalidateCache();
         context?.resetSession();
+
+        // Capture baseline cost at session start for accurate delta
+        candela.getDashboardData(24).then((data) => {
+          if (data) sessionBaselineCost = data.usage.totalCostUsd;
+        });
 
         await client.app.log({
           body: {
@@ -184,8 +205,18 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
       // Show cost + budget summary when session goes idle
       if (event.type === "session.idle" && sessionStartTime) {
-        const data = await candela.getDashboardData(1); // last hour
+        // Use session time range for accurate per-session cost
+        const sessionHours = Math.max(
+          (Date.now() - sessionStartTime.getTime()) / (1000 * 60 * 60),
+          0.1,
+        );
+        const data = await candela.getDashboardData(Math.ceil(sessionHours));
         if (data && data.usage.requestCount > 0) {
+          // Calculate session-specific cost (subtract baseline)
+          const sessionCost =
+            sessionBaselineCost !== null
+              ? Math.max(data.usage.totalCostUsd - sessionBaselineCost, 0)
+              : data.usage.totalCostUsd;
           const duration = Math.round(
             (Date.now() - sessionStartTime.getTime()) / 1000,
           );
@@ -195,7 +226,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           // Build summary with budget context
           const parts = [
             `${formatTokens(data.usage.totalTokens)} tokens`,
-            formatCost(data.usage.totalCostUsd),
+            formatCost(sessionCost),
             `${data.usage.requestCount} calls`,
             `${minutes}m${seconds}s`,
           ];

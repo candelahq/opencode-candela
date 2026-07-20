@@ -76,6 +76,22 @@ export interface DashboardData {
   totalRemainingUsd: number | null;
 }
 
+/** A model in the Candela catalog with pricing and metadata. */
+export interface CatalogEntry {
+  modelId: string;
+  provider: string;
+  displayName: string;
+  inputPerMillion: number;
+  outputPerMillion: number;
+  contextWindow: number;
+  category: string;
+  enabled: boolean;
+  /** High-tier pricing (above threshold), 0 if flat pricing. */
+  inputPerMillionHigh: number;
+  outputPerMillionHigh: number;
+  tierThresholdTokens: number;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Compute a human-readable reset countdown from a future Date. */
@@ -287,6 +303,60 @@ export class CandelaClient {
       if (!res.ok) return null;
       const data = await res.json();
       return parseModels(data.models ?? []);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetch the model catalog — all available models with pricing and metadata.
+   * Returns null if the catalog RPC is not available (older Candela backends).
+   */
+  async getModelCatalog(): Promise<CatalogEntry[] | null> {
+    if (!(await this.isAlive())) return null;
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/candela.v1.ModelCatalogService/ListModelCatalog`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      const entries: unknown[] = data.entries ?? [];
+      return entries
+        .filter(
+          (e): e is Record<string, unknown> =>
+            e != null && typeof e === "object",
+        )
+        .filter((e) => e.enabled !== false) // Only show enabled models
+        .map((e) => ({
+          modelId: String(e.modelId ?? e.model_id ?? ""),
+          provider: String(e.provider ?? ""),
+          displayName: String(
+            e.displayName ?? e.display_name ?? e.modelId ?? e.model_id ?? "",
+          ),
+          inputPerMillion: Number(
+            e.inputPerMillion ?? e.input_per_million ?? 0,
+          ),
+          outputPerMillion: Number(
+            e.outputPerMillion ?? e.output_per_million ?? 0,
+          ),
+          contextWindow: Number(e.contextWindow ?? e.context_window ?? 0),
+          category: String(e.category ?? ""),
+          enabled: e.enabled !== false,
+          inputPerMillionHigh: Number(
+            e.inputPerMillionHigh ?? e.input_per_million_high ?? 0,
+          ),
+          outputPerMillionHigh: Number(
+            e.outputPerMillionHigh ?? e.output_per_million_high ?? 0,
+          ),
+          tierThresholdTokens: Number(
+            e.tierThresholdTokens ?? e.tier_threshold_tokens ?? 0,
+          ),
+        }));
     } catch {
       return null;
     }
