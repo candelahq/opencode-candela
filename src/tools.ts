@@ -49,6 +49,8 @@ export interface SessionState {
   startTime: Date | null;
   /** Number of tool calls in this session. */
   toolCalls: number;
+  /** OpenCode session ID, or null if no active session. */
+  id: string | null;
 }
 
 /**
@@ -403,6 +405,8 @@ export function createCandelaTools(
       const lines: string[] = [
         `## Session Cost (${elapsed})`,
         "",
+        session.id ? `**Session**: \`${session.id.slice(0, 8)}...\`` : "",
+        "",
         `| Metric | Value |`,
         `|--------|-------|`,
         `| Total Cost | ${formatCost(totalCost)} |`,
@@ -598,12 +602,117 @@ export function createCandelaTools(
     },
   });
 
+  // ── candela_browse_catalog ────────────────────────────────────────────────
+
+  const browseCatalog = tool({
+    description:
+      "Browse the Candela model catalog. Shows all available models with pricing, " +
+      "context window sizes, and categories. Use when the user asks about available models, " +
+      "pricing comparisons, cheapest models, or wants to find a model with specific capabilities. " +
+      "Optionally filter by provider or category.",
+    args: {
+      provider: tool.schema
+        .string()
+        .optional()
+        .describe("Filter by provider (e.g. 'anthropic', 'google', 'openai')"),
+      category: tool.schema
+        .string()
+        .optional()
+        .describe("Filter by category (e.g. 'chat', 'code', 'reasoning')"),
+      sort_by: tool.schema
+        .enum(["price", "context", "name"])
+        .optional()
+        .describe(
+          "Sort order: 'price' (cheapest first), 'context' (largest first), 'name' (alphabetical). Default: price",
+        ),
+    },
+    async execute(args) {
+      let entries = await candela.getModelCatalog();
+      if (!entries) {
+        return {
+          title: "Catalog Unavailable",
+          output:
+            "Could not fetch the model catalog. Make sure Candela is running.",
+        };
+      }
+
+      if (entries.length === 0) {
+        return {
+          title: "Empty Catalog",
+          output: "The model catalog is empty. No models are configured.",
+        };
+      }
+
+      // Apply filters
+      if (args.provider) {
+        const p = args.provider.toLowerCase();
+        entries = entries.filter((e) => e.provider.toLowerCase().includes(p));
+      }
+      if (args.category) {
+        const c = args.category.toLowerCase();
+        entries = entries.filter((e) => e.category.toLowerCase().includes(c));
+      }
+
+      if (entries.length === 0) {
+        return {
+          title: "No Matching Models",
+          output: "No models match the specified filters.",
+        };
+      }
+
+      // Sort
+      const sortBy = args.sort_by ?? "price";
+      if (sortBy === "price") {
+        entries.sort((a, b) => a.inputPerMillion - b.inputPerMillion);
+      } else if (sortBy === "context") {
+        entries.sort((a, b) => b.contextWindow - a.contextWindow);
+      } else {
+        entries.sort((a, b) => a.modelId.localeCompare(b.modelId));
+      }
+
+      const formatCtx = (tokens: number): string => {
+        if (tokens === 0) return "—";
+        if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+        return `${(tokens / 1000).toFixed(0)}K`;
+      };
+
+      const formatPrice = (price: number): string => {
+        if (price === 0) return "free";
+        if (price < 0.01) return `$${price.toFixed(4)}`;
+        return `$${price.toFixed(2)}`;
+      };
+
+      const lines: string[] = [
+        `## Model Catalog (${entries.length} models)`,
+        "",
+        "| Model | Provider | Input/1M | Output/1M | Context | Category |",
+        "|-------|----------|----------|-----------|---------|----------|",
+      ];
+
+      for (const e of entries) {
+        let inputPrice = formatPrice(e.inputPerMillion);
+        if (e.inputPerMillionHigh > 0 && e.tierThresholdTokens > 0) {
+          inputPrice += ` (>${formatCtx(e.tierThresholdTokens)}: ${formatPrice(e.inputPerMillionHigh)})`;
+        }
+        lines.push(
+          `| ${e.modelId} | ${e.provider} | ${inputPrice} | ${formatPrice(e.outputPerMillion)} | ${formatCtx(e.contextWindow)} | ${e.category || "—"} |`,
+        );
+      }
+
+      return {
+        title: `Catalog: ${entries.length} models`,
+        output: lines.join("\n"),
+      };
+    },
+  });
+
   return {
     candela_cost_summary: costSummary,
     candela_check_budget: checkBudget,
     candela_list_traces: listTraces,
     candela_session_cost: sessionCost,
     candela_inspect_trace: inspectTrace,
+    candela_browse_catalog: browseCatalog,
   };
 }
 

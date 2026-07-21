@@ -20,6 +20,7 @@ function makeSession(
   const state: SessionState = {
     startTime: overrides.startTime ?? null,
     toolCalls: overrides.toolCalls ?? 0,
+    id: overrides.id ?? null,
   };
   return () => state;
 }
@@ -599,5 +600,222 @@ describe("candela_inspect_trace", () => {
 
     expect(result.output).toContain("❓ unknown");
     expect(result.output).not.toContain("✅ 200");
+  });
+});
+
+// ── candela_browse_catalog ──────────────────────────────────────────────────
+
+describe("candela_browse_catalog", () => {
+  const CANDELA_URL = "http://localhost:4100";
+
+  /** Build a CatalogEntry with sensible defaults — override only what matters. */
+  function model(overrides: Record<string, unknown> = {}) {
+    return {
+      modelId: overrides.modelId ?? "claude-sonnet-4",
+      provider: overrides.provider ?? "anthropic",
+      displayName: overrides.displayName ?? "Claude Sonnet 4",
+      inputPerMillion: overrides.inputPerMillion ?? 3.0,
+      outputPerMillion: overrides.outputPerMillion ?? 15.0,
+      contextWindow: overrides.contextWindow ?? 200000,
+      category: overrides.category ?? "chat",
+      enabled: overrides.enabled ?? true,
+      inputPerMillionHigh: overrides.inputPerMillionHigh ?? 0,
+      outputPerMillionHigh: overrides.outputPerMillionHigh ?? 0,
+      tierThresholdTokens: overrides.tierThresholdTokens ?? 0,
+    };
+  }
+
+  /** Create tools with a pre-configured catalog mock. */
+  function catalogTools(entries: ReturnType<typeof model>[] | null) {
+    const client = makeMockClient();
+    (client as unknown as Record<string, unknown>).getModelCatalog = vi
+      .fn()
+      .mockResolvedValue(entries);
+    return createCandelaTools(client, CANDELA_URL, makeSession());
+  }
+
+  /** Extract data rows from table output (skip header + separator). */
+  function dataRows(output: string) {
+    return output
+      .split("\n")
+      .filter(
+        (l) =>
+          l.startsWith("| ") &&
+          !l.startsWith("| Model") &&
+          !l.startsWith("|---"),
+      );
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns 'Catalog Unavailable' when Candela is down", async () => {
+    const tools = catalogTools(null);
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+    expect(result.title).toBe("Catalog Unavailable");
+  });
+
+  it("returns 'Empty Catalog' when no models exist", async () => {
+    const tools = catalogTools([]);
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+    expect(result.title).toBe("Empty Catalog");
+  });
+
+  it("shows all models sorted by price (default)", async () => {
+    const tools = catalogTools([
+      model({ modelId: "gpt-4o", provider: "openai", inputPerMillion: 5 }),
+      model({
+        modelId: "gemini-2.5-flash",
+        provider: "google",
+        inputPerMillion: 0.15,
+        contextWindow: 1000000,
+      }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("Catalog: 2 models");
+    const rows = dataRows(result.output);
+    expect(rows[0]).toContain("gemini-2.5-flash"); // cheapest first
+    expect(rows[1]).toContain("gpt-4o");
+  });
+
+  it("filters by provider", async () => {
+    const tools = catalogTools([
+      model({ modelId: "gpt-4o", provider: "openai" }),
+      model({ modelId: "claude-sonnet-4", provider: "anthropic" }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      { provider: "anthropic" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("Catalog: 1 models");
+    expect(result.output).toContain("claude-sonnet-4");
+    expect(result.output).not.toContain("gpt-4o");
+  });
+
+  it("filters by category", async () => {
+    const tools = catalogTools([
+      model({
+        modelId: "text-embedding-3",
+        inputPerMillion: 0.02,
+        category: "embedding",
+      }),
+      model({ modelId: "gpt-4o", provider: "openai", category: "chat" }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      { category: "embedding" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("Catalog: 1 models");
+    expect(result.output).toContain("text-embedding-3");
+    expect(result.output).not.toContain("gpt-4o");
+  });
+
+  it("sorts by context window size", async () => {
+    const tools = catalogTools([
+      model({
+        modelId: "gpt-4o",
+        provider: "openai",
+        contextWindow: 128000,
+      }),
+      model({
+        modelId: "gemini-2.5-pro",
+        provider: "google",
+        contextWindow: 1000000,
+      }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      { sort_by: "context" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    const rows = dataRows(result.output);
+    expect(rows[0]).toContain("gemini-2.5-pro"); // largest first
+    expect(rows[1]).toContain("gpt-4o");
+  });
+
+  it("shows tiered pricing", async () => {
+    const tools = catalogTools([
+      model({
+        modelId: "gemini-2.5-pro",
+        provider: "google",
+        inputPerMillion: 1.25,
+        contextWindow: 1000000,
+        inputPerMillionHigh: 2.5,
+        outputPerMillionHigh: 10,
+        tierThresholdTokens: 200000,
+      }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("$1.25");
+    expect(result.output).toContain("$2.50");
+    expect(result.output).toContain(">200K");
+  });
+
+  it("returns 'No Matching Models' when filters exclude everything", async () => {
+    const tools = catalogTools([
+      model({ modelId: "gpt-4o", provider: "openai" }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      { provider: "mistral" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("No Matching Models");
+  });
+
+  it("sorts alphabetically by name", async () => {
+    const tools = catalogTools([
+      model({ modelId: "gpt-4o", provider: "openai" }),
+      model({ modelId: "claude-sonnet-4", provider: "anthropic" }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      { sort_by: "name" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    const rows = dataRows(result.output);
+    expect(rows[0]).toContain("claude-sonnet-4");
+    expect(rows[1]).toContain("gpt-4o");
+  });
+
+  it("formats context windows correctly (K and M)", async () => {
+    const tools = catalogTools([
+      model({
+        modelId: "small-model",
+        provider: "test",
+        contextWindow: 8192,
+        inputPerMillion: 1,
+      }),
+      model({
+        modelId: "large-model",
+        provider: "test",
+        contextWindow: 2000000,
+        inputPerMillion: 2,
+      }),
+    ]);
+    const result = (await tools.candela_browse_catalog.execute(
+      { sort_by: "name" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("2.0M");
+    expect(result.output).toContain("8K");
   });
 });

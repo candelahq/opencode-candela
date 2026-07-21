@@ -110,11 +110,14 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionStartTime: Date | null = null;
   let sessionToolCalls = 0;
   let sessionId: string | null = null;
+  let sessionBaseline: { cost: number; tokens: number; calls: number } | null =
+    null;
 
   /** Accessor for session state — tools read this lazily. */
   const getSession = () => ({
     startTime: sessionStartTime,
     toolCalls: sessionToolCalls,
+    id: sessionId,
   });
 
   // ── Custom tools ──────────────────────────────────────────────────────────
@@ -159,19 +162,48 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     },
 
     /**
+     * Inject X-Session-Id header into LLM proxy requests.
+     * This ties each LLM call to the current OpenCode session in Candela,
+     * enabling per-session cost queries and trace filtering.
+     */
+    "chat.headers": async (_input, output) => {
+      if (!alive || !sessionId) return;
+      output.headers["X-Session-Id"] = sessionId;
+    },
+
+    /**
      * Listen for events to track session lifecycle and show cost toasts.
      */
     event: async ({ event }) => {
       if (!alive) return;
 
-      // Track session start — clear cache for fresh data
+      // Track session start — use OpenCode's real session ID
       if (event.type === "session.created") {
         sessionStartTime = new Date();
         sessionToolCalls = 0;
-        sessionId = crypto.randomUUID();
+        // Use OpenCode's session ID if available, fall back to UUID
+        const info = (event as { properties?: { info?: { id?: string } } })
+          .properties?.info;
+        sessionId = info?.id ?? crypto.randomUUID();
+        sessionBaseline = null;
         candela.resetHealth();
         candela.invalidateCache();
         context?.resetSession();
+
+        // Capture baseline metrics at session start for accurate delta.
+        // Awaited to prevent race where session.idle fires before baseline is set.
+        try {
+          const baselineData = await candela.getDashboardData(24);
+          if (baselineData) {
+            sessionBaseline = {
+              cost: baselineData.usage.totalCostUsd,
+              tokens: baselineData.usage.totalTokens,
+              calls: baselineData.usage.requestCount,
+            };
+          }
+        } catch {
+          // Non-fatal — sessionBaseline stays null, idle handler uses raw totals
+        }
 
         await client.app.log({
           body: {
@@ -184,8 +216,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
       // Show cost + budget summary when session goes idle
       if (event.type === "session.idle" && sessionStartTime) {
-        const data = await candela.getDashboardData(1); // last hour
+        // Always use 24h window to match baseline capture (fixes time-window mismatch)
+        const data = await candela.getDashboardData(24);
         if (data && data.usage.requestCount > 0) {
+          // Calculate session-specific metrics (subtract baseline)
+          const sessionCost = sessionBaseline
+            ? Math.max(data.usage.totalCostUsd - sessionBaseline.cost, 0)
+            : data.usage.totalCostUsd;
+          const sessionTokens = sessionBaseline
+            ? Math.max(data.usage.totalTokens - sessionBaseline.tokens, 0)
+            : data.usage.totalTokens;
+          const sessionCalls = sessionBaseline
+            ? Math.max(data.usage.requestCount - sessionBaseline.calls, 0)
+            : data.usage.requestCount;
           const duration = Math.round(
             (Date.now() - sessionStartTime.getTime()) / 1000,
           );
@@ -194,9 +237,9 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
           // Build summary with budget context
           const parts = [
-            `${formatTokens(data.usage.totalTokens)} tokens`,
-            formatCost(data.usage.totalCostUsd),
-            `${data.usage.requestCount} calls`,
+            `${formatTokens(sessionTokens)} tokens`,
+            formatCost(sessionCost),
+            `${sessionCalls} calls`,
             `${minutes}m${seconds}s`,
           ];
 
