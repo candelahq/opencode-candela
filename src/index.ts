@@ -127,7 +127,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const costTools = alive
     ? createCandelaTools(candela, candelaUrl, getSession)
     : undefined;
-  const configTools = createConfigTools(candela, candelaUrl);
+  const configTools = createConfigTools(candela, candelaUrl, client);
   // Phase 3: Context injection — cost awareness in system prompt
   const context = alive
     ? createContextHook(candela, () => getActiveMission())
@@ -280,6 +280,24 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               },
             });
           }
+        }
+      }
+
+      // Detect external config changes (#13)
+      if (event.type === "file.watcher.updated") {
+        const filePath = event.properties.file;
+        if (
+          filePath.endsWith(".opencode.json") ||
+          filePath.endsWith("opencode/config.json")
+        ) {
+          candela.invalidateCache();
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "info",
+              message: "🔄 Config file changed — Candela state refreshed",
+            },
+          });
         }
       }
     },
