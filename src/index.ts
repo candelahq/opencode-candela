@@ -175,6 +175,25 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
      * Listen for events to track session lifecycle and show cost toasts.
      */
     event: async ({ event }) => {
+      // Detect external config changes (#13) — runs regardless of Candela health
+      if (event.type === "file.watcher.updated") {
+        const filePath = event.properties?.file;
+        if (
+          filePath &&
+          (filePath.endsWith(".opencode.json") ||
+            filePath.endsWith("opencode/config.json"))
+        ) {
+          candela.invalidateCache();
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "info",
+              message: "🔄 Config file changed — Candela state refreshed",
+            },
+          });
+        }
+      }
+
       if (!alive) return;
 
       // Track session start — use OpenCode's real session ID
@@ -280,24 +299,6 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               },
             });
           }
-        }
-      }
-
-      // Detect external config changes (#13)
-      if (event.type === "file.watcher.updated") {
-        const filePath = event.properties.file;
-        if (
-          filePath.endsWith(".opencode.json") ||
-          filePath.endsWith("opencode/config.json")
-        ) {
-          candela.invalidateCache();
-          await client.app.log({
-            body: {
-              service: "opencode-candela",
-              level: "info",
-              message: "🔄 Config file changed — Candela state refreshed",
-            },
-          });
         }
       }
     },

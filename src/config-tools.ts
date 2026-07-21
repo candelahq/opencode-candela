@@ -169,15 +169,22 @@ export function createConfigTools(
 
           const patch =
             Object.keys(updatedModels).length === 0
-              ? // Remove entire provider if no models left
-                { provider: { [providerKey]: undefined as never } }
+              ? // Remove entire provider if no models left — null signals deletion in PATCH
+                // biome-ignore lint/suspicious/noExplicitAny: PATCH requires null to delete keys
+                { provider: { [providerKey]: null as any } }
               : {
                   provider: {
                     [providerKey]: { ...provider, models: updatedModels },
                   },
                 };
 
-          await client.config.update({ body: patch });
+          const { error } = await client.config.update({ body: patch });
+          if (error) {
+            return {
+              title: "Config Update Failed",
+              output: `Failed to update config: ${String(error)}`,
+            };
+          }
           return {
             title: `Removed ${args.model_id}`,
             output:
@@ -225,7 +232,13 @@ export function createConfigTools(
         body.model = `${providerKey}/${args.model_id}`;
       }
 
-      await client.config.update({ body });
+      const { error } = await client.config.update({ body });
+      if (error) {
+        return {
+          title: "Config Update Failed",
+          output: `Failed to update config: ${String(error)}`,
+        };
+      }
 
       const actionLabel =
         args.action === "set-default" ? "set as default" : "added";
