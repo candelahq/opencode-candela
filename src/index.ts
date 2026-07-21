@@ -190,16 +190,20 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         candela.invalidateCache();
         context?.resetSession();
 
-        // Capture baseline metrics at session start for accurate delta
-        candela.getDashboardData(24).then((data) => {
-          if (data) {
+        // Capture baseline metrics at session start for accurate delta.
+        // Awaited to prevent race where session.idle fires before baseline is set.
+        try {
+          const baselineData = await candela.getDashboardData(24);
+          if (baselineData) {
             sessionBaseline = {
-              cost: data.usage.totalCostUsd,
-              tokens: data.usage.totalTokens,
-              calls: data.usage.requestCount,
+              cost: baselineData.usage.totalCostUsd,
+              tokens: baselineData.usage.totalTokens,
+              calls: baselineData.usage.requestCount,
             };
           }
-        });
+        } catch {
+          // Non-fatal — sessionBaseline stays null, idle handler uses raw totals
+        }
 
         await client.app.log({
           body: {
