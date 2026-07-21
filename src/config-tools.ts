@@ -4,34 +4,20 @@
  * These tools let the AI agent manage OpenCode's configuration:
  * - candela_configure_model: Add/update/remove models routed through Candela
  * - candela_list_models: Show configured models with Candela cost enrichment
- * - candela_restart_opencode: Restart OpenCode after config changes
  *
- * Config format: JSONC (.opencode.json) with providers using
- * @ai-sdk/openai-compatible and Candela proxy baseURLs.
+ * Uses the OpenCode SDK config API (client.config.get/update) instead of
+ * raw file I/O. Changes are applied live — no restart needed.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import type { PluginInput } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import type { CandelaClient } from "./candela-client.js";
-import { formatCost, readJsoncFile, writeJsonFile } from "./utils.js";
+import { formatCost } from "./utils.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface OpenCodeConfig {
-  $schema?: string;
-  model?: string;
-  provider?: Record<string, ProviderConfig>;
-  [key: string]: unknown;
-}
-
-interface ProviderConfig {
-  npm?: string;
-  name?: string;
-  options?: { baseURL?: string; [key: string]: unknown };
-  models?: Record<string, { name?: string; [key: string]: unknown }>;
-}
+/** SDK client type extracted from PluginInput. */
+type OpenCodeClient = PluginInput["client"];
 
 // ── Known proxy routes ────────────────────────────────────────────────────────
 
@@ -90,15 +76,30 @@ export function humanName(modelId: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  "candela-anthropic": "Claude via Candela",
+  "candela-openai": "OpenAI via Candela",
+  "candela-gemini": "Gemini via Candela",
+  "candela-deepseek": "DeepSeek via Candela",
+  "candela-deepseek-v3": "DeepSeek V3 via Candela",
+  "candela-mistral": "Mistral via Candela",
+  "candela-qwen": "Qwen via Candela",
+};
+
 // ── Tool Factories ────────────────────────────────────────────────────────────
 
-export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
+export function createConfigTools(
+  candela: CandelaClient,
+  candelaUrl: string,
+  client: OpenCodeClient,
+) {
   // ── candela_configure_model ────────────────────────────────────────────
 
   const configureModel = tool({
     description:
       "Add, update, or remove a model in OpenCode's configuration, routed through Candela's proxy. " +
       "Use this when the user wants to add a new model, switch models, or configure model routing. " +
+      "Changes are applied live — no restart needed. " +
       "Example: 'add claude sonnet 4 through candela' or 'remove gpt-4o'.",
     args: {
       action: tool.schema
@@ -124,24 +125,9 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
         .describe(
           "Human-readable name for the model. Auto-generated if omitted.",
         ),
-      scope: tool.schema
-        .enum(["project", "global"])
-        .default("project")
-        .describe(
-          "Config scope: 'project' (.opencode.json in cwd) or 'global' (~/.config/opencode/).",
-        ),
     },
-    async execute(args, context) {
-      const configPath =
-        args.scope === "global"
-          ? join(homedir(), ".config", "opencode", "opencode.json")
-          : join(context.directory, ".opencode.json");
-
-      const config = readJsoncFile<OpenCodeConfig>(configPath);
-      if (!config.provider) config.provider = {};
-      if (!config.$schema) config.$schema = "https://opencode.ai/config.json";
-
-      // Normalise provider name to lowercase for lookup
+    async execute(args) {
+      // Resolve provider and route
       const rawProvider = args.provider ?? inferProvider(args.model_id);
       if (!rawProvider) {
         return {
@@ -165,21 +151,45 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
 
       const providerKey = route.providerKey;
 
+      // Read current config via SDK
+      const { data: config } = await client.config.get();
+      if (!config) {
+        return {
+          title: "Config Error",
+          output: "Failed to read OpenCode config via SDK.",
+        };
+      }
+
       if (args.action === "remove") {
-        const provider = config.provider[providerKey];
+        const provider = config.provider?.[providerKey];
         if (provider?.models?.[args.model_id]) {
-          delete provider.models[args.model_id];
-          // Clean up empty provider
-          if (Object.keys(provider.models).length === 0) {
-            delete config.provider[providerKey];
+          // Build a patch that removes the model
+          const updatedModels = { ...provider.models };
+          delete updatedModels[args.model_id];
+
+          const patch =
+            Object.keys(updatedModels).length === 0
+              ? // Remove entire provider if no models left — null signals deletion in PATCH
+                // biome-ignore lint/suspicious/noExplicitAny: PATCH requires null to delete keys
+                { provider: { [providerKey]: null as any } }
+              : {
+                  provider: {
+                    [providerKey]: { ...provider, models: updatedModels },
+                  },
+                };
+
+          const { error } = await client.config.update({ body: patch });
+          if (error) {
+            return {
+              title: "Config Update Failed",
+              output: `Failed to update config: ${String(error)}`,
+            };
           }
-          writeJsonFile(configPath, config);
           return {
             title: `Removed ${args.model_id}`,
             output:
-              `Removed **${args.model_id}** from ${providerKey} in \`${configPath}\`.\n\n` +
-              "⚠️ Restart OpenCode for changes to take effect. " +
-              "Use the `candela_restart_opencode` tool or press `Ctrl+C` and relaunch.",
+              `Removed **${args.model_id}** from ${providerKey}.\n\n` +
+              "✅ Changes applied live — no restart needed.",
           };
         }
         return {
@@ -189,40 +199,46 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
       }
 
       // Add or update
-      if (!config.provider[providerKey]) {
-        const providerDisplayNames: Record<string, string> = {
-          "candela-anthropic": "Claude via Candela",
-          "candela-openai": "OpenAI via Candela",
-          "candela-gemini": "Gemini via Candela",
-          "candela-deepseek": "DeepSeek via Candela",
-          "candela-deepseek-v3": "DeepSeek V3 via Candela",
-          "candela-mistral": "Mistral via Candela",
-          "candela-qwen": "Qwen via Candela",
-        };
-
-        config.provider[providerKey] = {
-          npm: "@ai-sdk/openai-compatible",
-          name:
-            providerDisplayNames[providerKey] ?? `${providerName} via Candela`,
-          options: {
-            baseURL: `${candelaUrl}${route.route}`,
-          },
-          models: {},
-        };
-      }
-
-      const provider = config.provider[providerKey];
-      if (!provider.models) provider.models = {};
-
+      const existingProvider = config.provider?.[providerKey];
       const displayName = args.display_name ?? humanName(args.model_id);
-      provider.models[args.model_id] = { name: displayName };
+
+      const providerPatch = existingProvider
+        ? {
+            ...existingProvider,
+            models: {
+              ...(existingProvider.models ?? {}),
+              [args.model_id]: { name: displayName },
+            },
+          }
+        : {
+            npm: "@ai-sdk/openai-compatible",
+            name:
+              PROVIDER_DISPLAY_NAMES[providerKey] ??
+              `${providerName} via Candela`,
+            options: {
+              baseURL: `${candelaUrl}${route.route}`,
+            },
+            models: {
+              [args.model_id]: { name: displayName },
+            },
+          };
+
+      const body: Record<string, unknown> = {
+        provider: { [providerKey]: providerPatch },
+      };
 
       // Set as default model if requested
       if (args.action === "set-default") {
-        config.model = `${providerKey}/${args.model_id}`;
+        body.model = `${providerKey}/${args.model_id}`;
       }
 
-      writeJsonFile(configPath, config);
+      const { error } = await client.config.update({ body });
+      if (error) {
+        return {
+          title: "Config Update Failed",
+          output: `Failed to update config: ${String(error)}`,
+        };
+      }
 
       const actionLabel =
         args.action === "set-default" ? "set as default" : "added";
@@ -235,19 +251,13 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
         `| Display Name | ${displayName} |`,
         `| Provider | ${providerKey} |`,
         `| Proxy URL | \`${candelaUrl}${route.route}\` |`,
-        `| Config File | \`${configPath}\` |`,
-        `| Scope | ${args.scope} |`,
       ];
 
       if (args.action === "set-default") {
-        lines.push(`| Default Model | \`${config.model}\` |`);
+        lines.push(`| Default Model | \`${providerKey}/${args.model_id}\` |`);
       }
 
-      lines.push(
-        "",
-        "⚠️ **Restart OpenCode** for changes to take effect. " +
-          "Use the `candela_restart_opencode` tool or press `Ctrl+C` and relaunch.",
-      );
+      lines.push("", "✅ **Changes applied live** — no restart needed.");
 
       return {
         title: `${actionLabel}: ${args.model_id} via Candela`,
@@ -271,48 +281,24 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
           "If true, also show recent usage/cost data per model from Candela.",
         ),
     },
-    async execute(args, context) {
-      // Read both project and global configs
-      const projectPath = join(context.directory, ".opencode.json");
-      const globalPath = join(
-        homedir(),
-        ".config",
-        "opencode",
-        "opencode.json",
-      );
-
-      const projectConfig = readJsoncFile<OpenCodeConfig>(projectPath);
-      const globalConfig = readJsoncFile<OpenCodeConfig>(globalPath);
-
-      // Merge providers — project models override global, but we merge model maps
-      const allProviders: Record<string, ProviderConfig & { source: string }> =
-        {};
-      for (const [key, val] of Object.entries(globalConfig.provider ?? {})) {
-        allProviders[key] = { ...val, source: "global" };
+    async execute(args) {
+      // Read config via SDK — returns merged project + global config
+      const { data: config } = await client.config.get();
+      if (!config) {
+        return {
+          title: "Config Error",
+          output: "Failed to read OpenCode config via SDK.",
+        };
       }
-      for (const [key, val] of Object.entries(projectConfig.provider ?? {})) {
-        if (allProviders[key]) {
-          // Merge model maps: global models + project overrides
-          const mergedModels = {
-            ...(allProviders[key].models ?? {}),
-            ...(val.models ?? {}),
-          };
-          allProviders[key] = {
-            ...val,
-            models: mergedModels,
-            source: "project",
-          };
-        } else {
-          allProviders[key] = { ...val, source: "project" };
-        }
-      }
+
+      const allProviders = config.provider ?? {};
 
       if (Object.keys(allProviders).length === 0) {
         return {
           title: "No Models Configured",
           output:
             "No providers configured in OpenCode. " +
-            'Use `candela_configure_model` to add a model (e.g. "add claude-sonnet-4").',
+            'Use `candela_configure_model` to add a model (e.g. "add claude sonnet 4").',
         };
       }
 
@@ -337,8 +323,8 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
       const usageHeader = args.show_usage ? " Cost (24h) | Calls |" : "";
       const usageSep = args.show_usage ? "------------|-------|" : "";
       lines.push(
-        `| Provider | Model | Name | Via Candela | Source |${usageHeader}`,
-        `|----------|-------|------|-------------|--------|${usageSep}`,
+        `| Provider | Model | Name | Via Candela |${usageHeader}`,
+        `|----------|-------|------|-------------|${usageSep}`,
       );
 
       let totalModels = 0;
@@ -361,7 +347,7 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
           }
 
           lines.push(
-            `| ${providerKey} | \`${modelId}\` | ${modelConfig.name ?? "—"} | ${isCandela ? "✅" : "❌"} | ${provider.source} |${usageCols}`,
+            `| ${providerKey} | \`${modelId}\` | ${modelConfig.name ?? "—"} | ${isCandela ? "✅" : "❌"} |${usageCols}`,
           );
         }
       }
@@ -371,13 +357,6 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
         `**${totalModels} models** configured (${candelaModels} via Candela proxy).`,
       );
 
-      if (existsSync(projectPath)) {
-        lines.push(`\nProject config: \`${projectPath}\``);
-      }
-      if (existsSync(globalPath)) {
-        lines.push(`Global config: \`${globalPath}\``);
-      }
-
       return {
         title: `${totalModels} models (${candelaModels} via Candela)`,
         output: lines.join("\n"),
@@ -385,73 +364,8 @@ export function createConfigTools(candela: CandelaClient, candelaUrl: string) {
     },
   });
 
-  // ── candela_restart_opencode ─────────────────────────────────────────
-
-  const restartOpencode = tool({
-    description:
-      "Restart OpenCode to pick up configuration changes. " +
-      "Use after adding or removing models with candela_configure_model. " +
-      "OpenCode reads config at startup, so a restart is needed for changes to take effect.",
-    args: {
-      confirm: tool.schema
-        .boolean()
-        .default(true)
-        .describe("Set to false for a dry-run that shows what would happen."),
-    },
-    async execute(args) {
-      if (!args.confirm) {
-        return {
-          title: "Restart Preview (dry-run)",
-          output:
-            "This would restart OpenCode by:\n" +
-            "1. Writing a restart marker file\n" +
-            "2. Exiting the current process (`process.exit(0)`)\n" +
-            "3. You may need to manually relaunch if no process supervisor is running\n\n" +
-            "Set `confirm: true` to execute.",
-        };
-      }
-
-      // Write a restart marker so the user can see why opencode exited
-      const markerPath = join(
-        homedir(),
-        ".local",
-        "share",
-        "opencode",
-        ".candela-restart",
-      );
-      try {
-        const markerDir = dirname(markerPath);
-        mkdirSync(markerDir, { recursive: true });
-        writeFileSync(
-          markerPath,
-          JSON.stringify({
-            reason: "Config change via candela_restart_opencode tool",
-            timestamp: new Date().toISOString(),
-          }),
-          "utf-8",
-        );
-      } catch {
-        // Non-fatal — marker is just informational
-      }
-
-      // Schedule exit after a short delay to allow response to be sent
-      setTimeout(() => {
-        process.exit(0);
-      }, 500);
-
-      return {
-        title: "Restarting OpenCode...",
-        output:
-          "🔄 **Exiting OpenCode** in 500ms.\n\n" +
-          "OpenCode will exit. If a process supervisor is running, it will relaunch automatically.\n" +
-          "Otherwise, run `opencode` manually to restart with the updated config.",
-      };
-    },
-  });
-
   return {
     candela_configure_model: configureModel,
     candela_list_models: listModels,
-    candela_restart_opencode: restartOpencode,
   };
 }
