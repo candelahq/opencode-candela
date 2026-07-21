@@ -110,7 +110,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionStartTime: Date | null = null;
   let sessionToolCalls = 0;
   let sessionId: string | null = null;
-  let sessionBaselineCost: number | null = null;
+  let sessionBaseline: { cost: number; tokens: number; calls: number } | null =
+    null;
 
   /** Accessor for session state — tools read this lazily. */
   const getSession = () => ({
@@ -184,14 +185,20 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         const info = (event as { properties?: { info?: { id?: string } } })
           .properties?.info;
         sessionId = info?.id ?? crypto.randomUUID();
-        sessionBaselineCost = null;
+        sessionBaseline = null;
         candela.resetHealth();
         candela.invalidateCache();
         context?.resetSession();
 
-        // Capture baseline cost at session start for accurate delta
+        // Capture baseline metrics at session start for accurate delta
         candela.getDashboardData(24).then((data) => {
-          if (data) sessionBaselineCost = data.usage.totalCostUsd;
+          if (data) {
+            sessionBaseline = {
+              cost: data.usage.totalCostUsd,
+              tokens: data.usage.totalTokens,
+              calls: data.usage.requestCount,
+            };
+          }
         });
 
         await client.app.log({
@@ -205,18 +212,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
       // Show cost + budget summary when session goes idle
       if (event.type === "session.idle" && sessionStartTime) {
-        // Use session time range for accurate per-session cost
-        const sessionHours = Math.max(
-          (Date.now() - sessionStartTime.getTime()) / (1000 * 60 * 60),
-          0.1,
-        );
-        const data = await candela.getDashboardData(Math.ceil(sessionHours));
+        // Always use 24h window to match baseline capture (fixes time-window mismatch)
+        const data = await candela.getDashboardData(24);
         if (data && data.usage.requestCount > 0) {
-          // Calculate session-specific cost (subtract baseline)
-          const sessionCost =
-            sessionBaselineCost !== null
-              ? Math.max(data.usage.totalCostUsd - sessionBaselineCost, 0)
-              : data.usage.totalCostUsd;
+          // Calculate session-specific metrics (subtract baseline)
+          const sessionCost = sessionBaseline
+            ? Math.max(data.usage.totalCostUsd - sessionBaseline.cost, 0)
+            : data.usage.totalCostUsd;
+          const sessionTokens = sessionBaseline
+            ? Math.max(data.usage.totalTokens - sessionBaseline.tokens, 0)
+            : data.usage.totalTokens;
+          const sessionCalls = sessionBaseline
+            ? Math.max(data.usage.requestCount - sessionBaseline.calls, 0)
+            : data.usage.requestCount;
           const duration = Math.round(
             (Date.now() - sessionStartTime.getTime()) / 1000,
           );
@@ -225,9 +233,9 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
           // Build summary with budget context
           const parts = [
-            `${formatTokens(data.usage.totalTokens)} tokens`,
+            `${formatTokens(sessionTokens)} tokens`,
             formatCost(sessionCost),
-            `${data.usage.requestCount} calls`,
+            `${sessionCalls} calls`,
             `${minutes}m${seconds}s`,
           ];
 

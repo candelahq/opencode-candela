@@ -314,6 +314,8 @@ export class CandelaClient {
    */
   async getModelCatalog(): Promise<CatalogEntry[] | null> {
     if (!(await this.isAlive())) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       const res = await fetch(
         `${this.baseUrl}/candela.v1.ModelCatalogService/ListModelCatalog`,
@@ -321,6 +323,7 @@ export class CandelaClient {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
+          signal: controller.signal,
         },
       );
       if (!res.ok) return null;
@@ -359,6 +362,8 @@ export class CandelaClient {
         }));
     } catch {
       return null;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

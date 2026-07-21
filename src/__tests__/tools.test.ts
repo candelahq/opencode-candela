@@ -602,3 +602,401 @@ describe("candela_inspect_trace", () => {
     expect(result.output).not.toContain("✅ 200");
   });
 });
+
+// ── candela_browse_catalog ──────────────────────────────────────────────────
+
+describe("candela_browse_catalog", () => {
+  const CANDELA_URL = "http://localhost:4100";
+
+  function makeCatalogEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      model_id: overrides.model_id ?? "claude-sonnet-4",
+      provider: overrides.provider ?? "anthropic",
+      display_name: overrides.display_name ?? "Claude Sonnet 4",
+      input_per_million: overrides.input_per_million ?? 3.0,
+      output_per_million: overrides.output_per_million ?? 15.0,
+      context_window: overrides.context_window ?? 200000,
+      category: overrides.category ?? "chat",
+      enabled: overrides.enabled ?? true,
+      input_per_million_high: overrides.input_per_million_high ?? 0,
+      output_per_million_high: overrides.output_per_million_high ?? 0,
+      tier_threshold_tokens: overrides.tier_threshold_tokens ?? 0,
+    };
+  }
+
+  function makeCatalogResponse(entries: Record<string, unknown>[]) {
+    return {
+      ok: true,
+      json: () => Promise.resolve({ entries }),
+    };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns 'Catalog Unavailable' when Candela is down", async () => {
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<null> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(null);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+    expect(result.title).toBe("Catalog Unavailable");
+  });
+
+  it("returns 'Empty Catalog' when no models exist", async () => {
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue([]);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+    expect(result.title).toBe("Empty Catalog");
+  });
+
+  it("shows all models sorted by price (default)", async () => {
+    const entries = [
+      {
+        modelId: "gpt-4o",
+        provider: "openai",
+        displayName: "GPT-4o",
+        inputPerMillion: 5,
+        outputPerMillion: 15,
+        contextWindow: 128000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+      {
+        modelId: "gemini-2.5-flash",
+        provider: "google",
+        displayName: "Gemini Flash",
+        inputPerMillion: 0.15,
+        outputPerMillion: 0.6,
+        contextWindow: 1000000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("Catalog: 2 models");
+    // Cheapest should be first (flash at $0.15)
+    const lines = result.output.split("\n");
+    const dataLines = lines.filter(
+      (l) =>
+        l.startsWith("| ") && !l.startsWith("| Model") && !l.startsWith("|---"),
+    );
+    expect(dataLines[0]).toContain("gemini-2.5-flash");
+    expect(dataLines[1]).toContain("gpt-4o");
+  });
+
+  it("filters by provider", async () => {
+    const entries = [
+      {
+        modelId: "gpt-4o",
+        provider: "openai",
+        displayName: "GPT-4o",
+        inputPerMillion: 5,
+        outputPerMillion: 15,
+        contextWindow: 128000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+      {
+        modelId: "claude-sonnet-4",
+        provider: "anthropic",
+        displayName: "Claude Sonnet",
+        inputPerMillion: 3,
+        outputPerMillion: 15,
+        contextWindow: 200000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      { provider: "anthropic" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("Catalog: 1 models");
+    expect(result.output).toContain("claude-sonnet-4");
+    expect(result.output).not.toContain("gpt-4o");
+  });
+
+  it("filters by category", async () => {
+    const entries = [
+      {
+        modelId: "text-embedding-3",
+        provider: "openai",
+        displayName: "Embedding",
+        inputPerMillion: 0.02,
+        outputPerMillion: 0,
+        contextWindow: 8192,
+        category: "embedding",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+      {
+        modelId: "gpt-4o",
+        provider: "openai",
+        displayName: "GPT-4o",
+        inputPerMillion: 5,
+        outputPerMillion: 15,
+        contextWindow: 128000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      { category: "embedding" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("Catalog: 1 models");
+    expect(result.output).toContain("text-embedding-3");
+    expect(result.output).not.toContain("gpt-4o");
+  });
+
+  it("sorts by context window size", async () => {
+    const entries = [
+      {
+        modelId: "gpt-4o",
+        provider: "openai",
+        displayName: "GPT-4o",
+        inputPerMillion: 5,
+        outputPerMillion: 15,
+        contextWindow: 128000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+      {
+        modelId: "gemini-2.5-pro",
+        provider: "google",
+        displayName: "Gemini Pro",
+        inputPerMillion: 1.25,
+        outputPerMillion: 10,
+        contextWindow: 1000000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      { sort_by: "context" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    const lines = result.output.split("\n");
+    const dataLines = lines.filter(
+      (l) =>
+        l.startsWith("| ") && !l.startsWith("| Model") && !l.startsWith("|---"),
+    );
+    // Largest context should be first
+    expect(dataLines[0]).toContain("gemini-2.5-pro");
+    expect(dataLines[1]).toContain("gpt-4o");
+  });
+
+  it("shows tiered pricing", async () => {
+    const entries = [
+      {
+        modelId: "gemini-2.5-pro",
+        provider: "google",
+        displayName: "Gemini Pro",
+        inputPerMillion: 1.25,
+        outputPerMillion: 10,
+        contextWindow: 1000000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 2.5,
+        outputPerMillionHigh: 10,
+        tierThresholdTokens: 200000,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      {},
+      makeContext(),
+    )) as { title: string; output: string };
+
+    // Should show tiered pricing indicator
+    expect(result.output).toContain("$1.25");
+    expect(result.output).toContain("$2.50");
+    expect(result.output).toContain(">200K");
+  });
+
+  it("returns 'No Matching Models' when filters exclude everything", async () => {
+    const entries = [
+      {
+        modelId: "gpt-4o",
+        provider: "openai",
+        displayName: "GPT-4o",
+        inputPerMillion: 5,
+        outputPerMillion: 15,
+        contextWindow: 128000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      { provider: "mistral" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.title).toBe("No Matching Models");
+  });
+
+  it("sorts alphabetically by name", async () => {
+    const entries = [
+      {
+        modelId: "gpt-4o",
+        provider: "openai",
+        displayName: "GPT-4o",
+        inputPerMillion: 5,
+        outputPerMillion: 15,
+        contextWindow: 128000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+      {
+        modelId: "claude-sonnet-4",
+        provider: "anthropic",
+        displayName: "Claude Sonnet",
+        inputPerMillion: 3,
+        outputPerMillion: 15,
+        contextWindow: 200000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      { sort_by: "name" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    const lines = result.output.split("\n");
+    const dataLines = lines.filter(
+      (l) =>
+        l.startsWith("| ") && !l.startsWith("| Model") && !l.startsWith("|---"),
+    );
+    expect(dataLines[0]).toContain("claude-sonnet-4");
+    expect(dataLines[1]).toContain("gpt-4o");
+  });
+
+  it("formats context windows correctly (K and M)", async () => {
+    const entries = [
+      {
+        modelId: "small-model",
+        provider: "test",
+        displayName: "Small",
+        inputPerMillion: 1,
+        outputPerMillion: 1,
+        contextWindow: 8192,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+      {
+        modelId: "large-model",
+        provider: "test",
+        displayName: "Large",
+        inputPerMillion: 1,
+        outputPerMillion: 1,
+        contextWindow: 2000000,
+        category: "chat",
+        enabled: true,
+        inputPerMillionHigh: 0,
+        outputPerMillionHigh: 0,
+        tierThresholdTokens: 0,
+      },
+    ];
+    const client = makeMockClient();
+    (
+      client as unknown as { getModelCatalog: () => Promise<unknown[]> }
+    ).getModelCatalog = vi.fn().mockResolvedValue(entries);
+    const tools = createCandelaTools(client, CANDELA_URL, makeSession());
+    const result = (await tools.candela_browse_catalog.execute(
+      { sort_by: "name" },
+      makeContext(),
+    )) as { title: string; output: string };
+
+    expect(result.output).toContain("2.0M");
+    expect(result.output).toContain("8K");
+  });
+});
