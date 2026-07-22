@@ -243,6 +243,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             `${minutes}m${seconds}s`,
           ];
 
+          // Cache hit rate
+          const totalCacheRead = data.models.reduce(
+            (s, m) => s + m.cacheReadTokens,
+            0,
+          );
+          if (totalCacheRead > 0 && data.usage.inputTokens > 0) {
+            const hitRate = Math.min(
+              100,
+              (totalCacheRead / data.usage.inputTokens) * 100,
+            ).toFixed(0);
+            parts.push(`🗄️${hitRate}%`);
+          }
+
           // Add budget indicator if available
           if (data.budget) {
             const emoji = budgetEmoji(data.budget.usedFraction);
@@ -279,6 +292,24 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
                 message: `⚠️ Budget: ${budgetMsg}`,
               },
             });
+          }
+        }
+
+        // Per-call cost anomaly detection (#5)
+        // Alert if any single model's per-call cost exceeds $1
+        if (data && data.usage.totalCostUsd > 0.5) {
+          for (const m of data.models) {
+            const perCall =
+              m.requestCount > 0 ? m.totalCostUsd / m.requestCount : 0;
+            if (perCall > 1.0) {
+              await client.app.log({
+                body: {
+                  service: "opencode-candela",
+                  level: "warn",
+                  message: `💸 Cost spike: ${m.model} averaging ${formatCost(perCall)}/call (${m.requestCount} calls)`,
+                },
+              });
+            }
           }
         }
       }

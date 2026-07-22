@@ -34,6 +34,7 @@ export const tui: TuiPlugin = async (api) => {
   let sessionCostUsd = 0;
   let baselineCalls: number | null = null;
   let baselineCostUsd: number | null = null;
+  let cacheHitRate: number | null = null;
 
   async function refresh() {
     const now = Date.now();
@@ -87,6 +88,20 @@ export const tui: TuiPlugin = async (api) => {
             cost: m.totalCostUsd,
             calls: m.requestCount,
           }));
+
+        // Cache hit rate across all models
+        const totalCacheRead = data.models.reduce(
+          (s, m) => s + m.cacheReadTokens,
+          0,
+        );
+        if (totalCacheRead > 0 && data.usage.inputTokens > 0) {
+          cacheHitRate = Math.min(
+            100,
+            (totalCacheRead / data.usage.inputTokens) * 100,
+          );
+        } else {
+          cacheHitRate = null;
+        }
       }
     } catch {
       // Non-fatal — stale data is better than no data
@@ -125,6 +140,12 @@ export const tui: TuiPlugin = async (api) => {
             ]
           : [];
 
+        // Cache effectiveness
+        const cacheLine =
+          cacheHitRate !== null
+            ? [`🗄️ Cache hit rate: ${cacheHitRate.toFixed(0)}%`]
+            : [];
+
         // Mission progress (reads same file as server plugin)
         const missionLines: string[] = [];
         try {
@@ -146,9 +167,13 @@ export const tui: TuiPlugin = async (api) => {
           // Non-fatal
         }
 
-        return [budgetLine, costLine, ...modelLines, ...missionLines].join(
-          "\n",
-        ) as unknown as null;
+        return [
+          budgetLine,
+          costLine,
+          ...cacheLine,
+          ...modelLines,
+          ...missionLines,
+        ].join("\n") as unknown as null;
       },
 
       // Sidebar footer — compact budget status
