@@ -295,8 +295,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           }
         }
 
-        // Per-call cost anomaly detection (#5)
-        // Alert if any single model's per-call cost exceeds $1
+        // Per-call cost anomaly detection — rolling 24h window
+        // Alert if any model's average cost/call exceeds $1 over the last 24h
         if (data && data.usage.totalCostUsd > 0.5) {
           for (const m of data.models) {
             const perCall =
@@ -306,7 +306,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
                 body: {
                   service: "opencode-candela",
                   level: "warn",
-                  message: `💸 Cost spike: ${m.model} averaging ${formatCost(perCall)}/call (${m.requestCount} calls)`,
+                  message: `💸 Cost spike (24h): ${m.model} averaging ${formatCost(perCall)}/call (${m.requestCount} calls)`,
                 },
               });
             }
