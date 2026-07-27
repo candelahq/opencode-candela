@@ -157,7 +157,10 @@ export function createCandelaTools(
           );
         }
 
-        const byModel = new Map<string, { cost: number; calls: number; tokens: number }>();
+        const byModel = new Map<
+          string,
+          { cost: number; calls: number; tokens: number }
+        >();
         for (const t of filteredTraces) {
           const key = t.model || "unknown";
           const existing = byModel.get(key) ?? { cost: 0, calls: 0, tokens: 0 };
@@ -405,7 +408,9 @@ export function createCandelaTools(
       model_filter: tool.schema
         .string()
         .optional()
-        .describe("Optional model name filter. Only applies when trace_id is omitted."),
+        .describe(
+          "Optional model name filter. Only applies when trace_id is omitted.",
+        ),
       min_cost: tool.schema
         .number()
         .optional()

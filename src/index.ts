@@ -190,11 +190,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       }
 
       if (event.type === "todo.updated") {
-        const payload = event.properties as any;
+        const payload = event.properties as Record<string, unknown>;
         if (payload?.active) {
-          activeTaskId = payload.id ?? null;
-          activeSubtaskParent = payload.parentId ?? null;
-          activeSubtaskTitle = payload.title ?? null;
+          activeTaskId = (payload.id as string) ?? null;
+          activeSubtaskParent = (payload.parentId as string) ?? null;
+          activeSubtaskTitle = (payload.title as string) ?? null;
         } else if (payload?.id && payload.id === activeTaskId) {
           activeTaskId = null;
           activeSubtaskParent = null;
