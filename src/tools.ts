@@ -9,7 +9,7 @@
  * Phase 1 tools:
  * - candela_cost_summary: Session/daily cost breakdown with model detail
  * - candela_check_budget: Budget status, grants, and remaining balance
- * - candela_list_traces: Recent LLM traces with cost and latency
+ * - candela_traces: Recent LLM traces with cost and latency
  */
 
 import { tool } from "@opencode-ai/plugin";
@@ -72,13 +72,11 @@ export function createCandelaTools(
       "Shows total spend, token usage, request count, and per-model breakdown. " +
       "Use this when the user asks about costs, spending, usage, or tokens.",
     args: {
-      hours: tool.schema
-        .number()
-        .min(1)
-        .max(720)
-        .default(24)
+      scope: tool.schema
+        .enum(["session", "1h", "24h", "7d"])
+        .default("24h")
         .describe(
-          "Number of hours to look back. Default 24 (today). Use 1 for current session, 168 for this week.",
+          "Time period to analyze. Use 'session' for the current coding session.",
         ),
       model_filter: tool.schema
         .string()
@@ -88,7 +86,125 @@ export function createCandelaTools(
         ),
     },
     async execute(args) {
-      const data = await candela.getDashboardData(args.hours);
+      if (args.scope === "session") {
+        const session = getSession();
+        if (!session.startTime) {
+          return {
+            title: "No Active Session",
+            output:
+              "No active session detected. Session tracking starts when you begin a conversation.",
+          };
+        }
+
+        const traces = await fetchSessionTraces(candelaUrl, session.startTime);
+        if (!traces) {
+          return {
+            title: "Candela Unavailable",
+            output:
+              "Could not fetch session data. Make sure Candela is running.",
+          };
+        }
+
+        if (traces.length === 0) {
+          const elapsed = formatSessionDuration(session.startTime);
+          return {
+            title: "No Session Costs",
+            output: `Session started ${elapsed} ago but no LLM calls recorded yet.`,
+          };
+        }
+
+        const totalCost = traces.reduce((sum, t) => sum + t.costUsd, 0);
+        const totalInput = traces.reduce((sum, t) => sum + t.inputTokens, 0);
+        const totalOutput = traces.reduce((sum, t) => sum + t.outputTokens, 0);
+        const totalCacheRead = traces.reduce(
+          (sum, t) => sum + t.cacheReadTokens,
+          0,
+        );
+        const avgLatency =
+          traces.reduce((sum, t) => sum + t.latencyMs, 0) / traces.length;
+        const elapsed = formatSessionDuration(session.startTime);
+
+        const outLines = [
+          `## Session Cost (${elapsed})`,
+          "",
+          session.id ? `**Session**: \`${session.id.slice(0, 8)}...\`` : "",
+          "",
+          `| Metric | Value |`,
+          `|--------|-------|`,
+          `| Total Cost | ${formatCost(totalCost)} |`,
+          `| LLM Calls | ${traces.length} |`,
+          `| Input Tokens | ${formatTokens(totalInput)} |`,
+          `| Output Tokens | ${formatTokens(totalOutput)} |`,
+          `| Avg Latency | ${formatDuration(avgLatency)} |`,
+          `| Cost/Call | ${formatCost(totalCost / traces.length)} |`,
+        ];
+
+        if (totalCacheRead > 0 && totalInput > 0) {
+          const hitRate = Math.min(
+            100,
+            (totalCacheRead / totalInput) * 100,
+          ).toFixed(0);
+          outLines.push(`| Cache Hit Rate | ${hitRate}% |`);
+        }
+
+        let filteredTraces = traces;
+        if (args.model_filter) {
+          const filter = args.model_filter.toLowerCase();
+          filteredTraces = traces.filter(
+            (t) =>
+              (t.model || "").toLowerCase().includes(filter) ||
+              (t.provider || "").toLowerCase().includes(filter),
+          );
+        }
+
+        const byModel = new Map<
+          string,
+          { cost: number; calls: number; tokens: number }
+        >();
+        for (const t of filteredTraces) {
+          const key = t.model || "unknown";
+          const existing = byModel.get(key) ?? { cost: 0, calls: 0, tokens: 0 };
+          existing.cost += t.costUsd;
+          existing.calls += 1;
+          existing.tokens += t.inputTokens + t.outputTokens;
+          byModel.set(key, existing);
+        }
+
+        if (byModel.size > 0) {
+          outLines.push(
+            "",
+            "### Per-Model Breakdown",
+            "",
+            "| Model | Cost | Calls | Tokens |",
+            "|-------|------|-------|--------|",
+          );
+          const sorted = [...byModel.entries()].sort(
+            (a, b) => b[1].cost - a[1].cost,
+          );
+          for (const [model, stats] of sorted) {
+            outLines.push(
+              `| ${model} | ${formatCost(stats.cost)} | ${stats.calls} | ${formatTokens(stats.tokens)} |`,
+            );
+          }
+        }
+
+        const data = await candela.getDashboardData(24);
+        if (data?.budget) {
+          const b = data.budget;
+          outLines.push(
+            "",
+            `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} (${b.percentUsed.toFixed(0)}% used)`,
+          );
+        }
+
+        return {
+          title: `Session: ${formatCost(totalCost)} (${traces.length} calls, ${elapsed})`,
+          output: outLines.join("\n"),
+        };
+      }
+
+      const hours = args.scope === "1h" ? 1 : args.scope === "7d" ? 168 : 24;
+      const data = await candela.getDashboardData(hours);
       if (!data) {
         return {
           title: "Candela Unavailable",
@@ -102,11 +218,10 @@ export function createCandelaTools(
       if (usage.requestCount === 0) {
         return {
           title: "No Usage",
-          output: `No LLM calls recorded in the last ${args.hours} hour(s).`,
+          output: `No LLM calls recorded in the last ${hours} hour(s).`,
         };
       }
 
-      // Filter models if requested
       let filteredModels = models;
       if (args.model_filter) {
         const filter = args.model_filter.toLowerCase();
@@ -117,9 +232,8 @@ export function createCandelaTools(
         );
       }
 
-      // Build output
-      const lines: string[] = [
-        `## Cost Summary (last ${args.hours}h)`,
+      const outLines = [
+        `## Cost Summary (last ${hours}h)`,
         "",
         `| Metric | Value |`,
         `|--------|-------|`,
@@ -129,31 +243,28 @@ export function createCandelaTools(
         `| Avg Cost/Call | ${formatCost(usage.totalCostUsd / usage.requestCount)} |`,
       ];
 
-      // Budget context
       if (data.budget) {
         const b = data.budget;
-        lines.push(
+        outLines.push(
           "",
           `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} daily (${b.percentUsed.toFixed(0)}% used)`,
         );
       }
 
-      // Cache effectiveness
       const totalCacheRead = models.reduce((s, m) => s + m.cacheReadTokens, 0);
       if (totalCacheRead > 0 && usage.inputTokens > 0) {
         const hitRate = Math.min(
           100,
           (totalCacheRead / usage.inputTokens) * 100,
         ).toFixed(0);
-        lines.push(
+        outLines.push(
           "",
           `**Cache**: ${hitRate}% hit rate (${formatTokens(totalCacheRead)} cached reads of ${formatTokens(usage.inputTokens)} input)`,
         );
       }
 
-      // Model breakdown
       if (filteredModels.length > 0) {
-        lines.push(
+        outLines.push(
           "",
           `### ${args.model_filter ? "Filtered" : "Per-Model"} Breakdown`,
           "",
@@ -169,18 +280,18 @@ export function createCandelaTools(
             m.cacheReadTokens > 0
               ? `${formatTokens(m.cacheReadTokens)} read`
               : "—";
-          lines.push(
+          outLines.push(
             `| ${m.model} | ${m.provider} | ${formatTokens(m.totalTokens)} | ${formatCost(m.totalCostUsd)} | ${m.requestCount} | ${cacheInfo} |`,
           );
         }
         if (sorted.length > 15) {
-          lines.push(`| ... | +${sorted.length - 15} more models | | | | |`);
+          outLines.push(`| ... | +${sorted.length - 15} more models | | | | |`);
         }
       }
 
       return {
-        title: `Cost: ${formatCost(usage.totalCostUsd)} (${args.hours}h)`,
-        output: lines.join("\n"),
+        title: `Cost: ${formatCost(usage.totalCostUsd)} (${hours}h)`,
+        output: outLines.join("\n"),
       };
     },
   });
@@ -272,333 +383,194 @@ export function createCandelaTools(
     },
   });
 
-  // ── candela_list_traces ───────────────────────────────────────────────────
+  // ── candela_traces ────────────────────────────────────────────────────────
 
   const listTraces = tool({
     description:
-      "List recent LLM traces with cost, latency, and token details. " +
+      "List recent LLM traces or inspect a specific trace by ID. " +
       "Use this when the user asks about recent calls, traces, requests, " +
-      "latency, or wants to see what LLM calls were made.",
+      "latency, or wants to see what LLM calls were made. Provide a trace_id to see detailed span trees.",
     args: {
+      trace_id: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Optional trace ID to inspect. If omitted, lists recent traces.",
+        ),
       limit: tool.schema
         .number()
         .min(1)
         .max(50)
         .default(10)
-        .describe("Number of recent traces to return. Default 10."),
+        .describe(
+          "Number of recent traces to return when listing. Default 10.",
+        ),
       model_filter: tool.schema
         .string()
         .optional()
-        .describe("Optional model name filter."),
+        .describe(
+          "Optional model name filter. Only applies when trace_id is omitted.",
+        ),
       min_cost: tool.schema
         .number()
         .optional()
         .describe(
-          "Optional minimum cost in USD. Use to find expensive calls (e.g. 0.10 for calls over 10 cents).",
+          "Optional minimum cost in USD. Use to find expensive calls (e.g. 0.10 for calls over 10 cents). Only applies when trace_id is omitted.",
         ),
     },
     async execute(args) {
-      // Fetch traces via the SearchSpans RPC
-      const traces = await fetchTraces(
-        candelaUrl,
-        args.limit,
-        args.model_filter,
-        args.min_cost,
-      );
-      if (!traces) {
-        return {
-          title: "Candela Unavailable",
-          output: "Could not fetch traces. Make sure Candela is running.",
-        };
-      }
+      if (args.trace_id) {
+        const traceData = await fetchTrace(candelaUrl, args.trace_id);
+        if (!traceData) {
+          return {
+            title: "Trace Not Found",
+            output: `Could not fetch trace \`${args.trace_id}\`. It may not exist or Candela may be unavailable.`,
+          };
+        }
 
-      if (traces.length === 0) {
-        return {
-          title: "No Traces",
-          output: "No matching traces found.",
-        };
-      }
+        const spans = traceData.spans ?? [];
+        if (spans.length === 0) {
+          return {
+            title: "Empty Trace",
+            output: `Trace \`${args.trace_id}\` exists but has no spans.`,
+          };
+        }
 
-      const totalCost = traces.reduce((sum, t) => sum + t.costUsd, 0);
-      const avgLatency =
-        traces.reduce((sum, t) => sum + t.latencyMs, 0) / traces.length;
+        const totalCost = spans.reduce((sum, s) => sum + s.costUsd, 0);
+        const totalInput = spans.reduce((sum, s) => sum + s.inputTokens, 0);
+        const totalOutput = spans.reduce((sum, s) => sum + s.outputTokens, 0);
+        const totalCache = spans.reduce((sum, s) => sum + s.cacheReadTokens, 0);
 
-      const lines: string[] = [
-        `## Recent Traces (${traces.length} shown)`,
-        "",
-        `**Total Cost**: ${formatCost(totalCost)} | **Avg Latency**: ${formatDuration(avgLatency)}`,
-        "",
-        `| Time | Model | Tokens | Cost | Latency | Cache |`,
-        `|------|-------|--------|------|---------|-------|`,
-      ];
-
-      for (const t of traces) {
-        const time = new Date(t.timestamp).toLocaleTimeString(undefined, {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        const tokens = `${formatTokens(t.inputTokens)}→${formatTokens(t.outputTokens)}`;
-        const cache =
-          t.cacheReadTokens > 0
-            ? `${formatTokens(t.cacheReadTokens)} hit`
-            : "—";
-        const status = t.statusCode === 200 ? "" : ` ❌${t.statusCode}`;
-        lines.push(
-          `| ${time} | ${t.model}${status} | ${tokens} | ${formatCost(t.costUsd)} | ${formatDuration(t.latencyMs)} | ${cache} |`,
-        );
-      }
-
-      return {
-        title: `Traces: ${traces.length} calls, ${formatCost(totalCost)}`,
-        output: lines.join("\n"),
-      };
-    },
-  });
-
-  // ── candela_session_cost ────────────────────────────────────────────────
-
-  const sessionCost = tool({
-    description:
-      "Get the cost of the current coding session. " +
-      "Shows total spend, token usage, per-model breakdown, and cache stats since the session started. " +
-      "Use this when the user asks about current session cost, this session's spending, or how much this conversation cost.",
-    args: {},
-    async execute() {
-      const session = getSession();
-      if (!session.startTime) {
-        return {
-          title: "No Active Session",
-          output:
-            "No active session detected. Session tracking starts when you begin a conversation.",
-        };
-      }
-
-      // Fetch spans from session start to now
-      const traces = await fetchSessionTraces(candelaUrl, session.startTime);
-      if (!traces) {
-        return {
-          title: "Candela Unavailable",
-          output: "Could not fetch session data. Make sure Candela is running.",
-        };
-      }
-
-      if (traces.length === 0) {
-        const elapsed = formatSessionDuration(session.startTime);
-        return {
-          title: "No Session Costs",
-          output: `Session started ${elapsed} ago but no LLM calls recorded yet.`,
-        };
-      }
-
-      // Aggregate
-      const totalCost = traces.reduce((sum, t) => sum + t.costUsd, 0);
-      const totalInput = traces.reduce((sum, t) => sum + t.inputTokens, 0);
-      const totalOutput = traces.reduce((sum, t) => sum + t.outputTokens, 0);
-      const totalCacheRead = traces.reduce(
-        (sum, t) => sum + t.cacheReadTokens,
-        0,
-      );
-      const avgLatency =
-        traces.reduce((sum, t) => sum + t.latencyMs, 0) / traces.length;
-      const elapsed = formatSessionDuration(session.startTime);
-
-      const lines: string[] = [
-        `## Session Cost (${elapsed})`,
-        "",
-        session.id ? `**Session**: \`${session.id.slice(0, 8)}...\`` : "",
-        "",
-        `| Metric | Value |`,
-        `|--------|-------|`,
-        `| Total Cost | ${formatCost(totalCost)} |`,
-        `| LLM Calls | ${traces.length} |`,
-        `| Input Tokens | ${formatTokens(totalInput)} |`,
-        `| Output Tokens | ${formatTokens(totalOutput)} |`,
-        `| Avg Latency | ${formatDuration(avgLatency)} |`,
-        `| Cost/Call | ${formatCost(totalCost / traces.length)} |`,
-      ];
-
-      // Cache stats
-      if (totalCacheRead > 0 && totalInput > 0) {
-        const hitRate = Math.min(
-          100,
-          (totalCacheRead / totalInput) * 100,
-        ).toFixed(0);
-        lines.push(`| Cache Hit Rate | ${hitRate}% |`);
-      }
-
-      // Per-model breakdown
-      const byModel = new Map<
-        string,
-        { cost: number; calls: number; tokens: number }
-      >();
-      for (const t of traces) {
-        const key = t.model || "unknown";
-        const existing = byModel.get(key) ?? { cost: 0, calls: 0, tokens: 0 };
-        existing.cost += t.costUsd;
-        existing.calls += 1;
-        existing.tokens += t.inputTokens + t.outputTokens;
-        byModel.set(key, existing);
-      }
-
-      if (byModel.size > 0) {
-        lines.push(
+        const outLines = [
+          `## Trace \`${args.trace_id.slice(0, 12)}…\``,
           "",
-          "### Per-Model Breakdown",
+          `| Metric | Value |`,
+          `|--------|-------|`,
+          `| Spans | ${spans.length} |`,
+          `| Total Cost | ${formatCost(totalCost)} |`,
+          `| Input Tokens | ${formatTokens(totalInput)} |`,
+          `| Output Tokens | ${formatTokens(totalOutput)} |`,
+        ];
+
+        if (totalCache > 0) {
+          outLines.push(`| Cache Read | ${formatTokens(totalCache)} |`);
+          if (totalInput > 0) {
+            const hitRate = Math.min(
+              100,
+              (totalCache / totalInput) * 100,
+            ).toFixed(0);
+            outLines.push(`| Cache Hit Rate | ${hitRate}% |`);
+          }
+        }
+
+        const root =
+          spans.find((s) => !s.parentSpanId || s.parentSpanId === "") ??
+          spans[0];
+        if (root) {
+          outLines.push(
+            "",
+            "### Root Span",
+            "",
+            `| Field | Value |`,
+            `|-------|-------|`,
+            `| Model | ${root.model} |`,
+            `| Provider | ${root.provider || "—"} |`,
+            `| Status | ${root.statusCode === 200 ? "✅ 200" : root.statusCode === 0 ? "❓ unknown" : `❌ ${root.statusCode}`} |`,
+            `| Latency | ${formatDuration(root.latencyMs)} |`,
+            `| Cost | ${formatCost(root.costUsd)} |`,
+          );
+
+          if (root.cacheReadTokens > 0 || root.cacheCreationTokens > 0) {
+            outLines.push(
+              `| Cache Read | ${formatTokens(root.cacheReadTokens)} |`,
+              `| Cache Write | ${formatTokens(root.cacheCreationTokens)} |`,
+            );
+          }
+        }
+
+        if (spans.length > 1) {
+          outLines.push(
+            "",
+            "### Span Waterfall",
+            "",
+            "| # | Span ID | Model | Latency | Cost | Status |",
+            "|---|---------|-------|---------|------|--------|",
+          );
+
+          for (let i = 0; i < spans.length; i++) {
+            const s = spans[i];
+            const depth = s.parentSpanId ? "  └─ " : "";
+            const status =
+              s.statusCode === 200
+                ? "✅"
+                : s.statusCode === 0
+                  ? "❓"
+                  : `❌${s.statusCode}`;
+            outLines.push(
+              `| ${i + 1} | ${depth}${s.spanId.slice(0, 8)} | ${s.model} | ${formatDuration(s.latencyMs)} | ${formatCost(s.costUsd)} | ${status} |`,
+            );
+          }
+        }
+
+        return {
+          title: `Trace: ${formatCost(totalCost)} · ${spans.length} span${spans.length > 1 ? "s" : ""} · ${root?.model ?? "unknown"}`,
+          output: outLines.join("\n"),
+        };
+      } else {
+        const traces = await fetchTraces(
+          candelaUrl,
+          args.limit,
+          args.model_filter,
+          args.min_cost,
+        );
+        if (!traces) {
+          return {
+            title: "Candela Unavailable",
+            output: "Could not fetch traces. Make sure Candela is running.",
+          };
+        }
+
+        if (traces.length === 0) {
+          return {
+            title: "No Traces",
+            output: "No matching traces found.",
+          };
+        }
+
+        const totalCost = traces.reduce((sum, t) => sum + t.costUsd, 0);
+        const avgLatency =
+          traces.reduce((sum, t) => sum + t.latencyMs, 0) / traces.length;
+
+        const outLines = [
+          `## Recent Traces (${traces.length} shown)`,
           "",
-          "| Model | Cost | Calls | Tokens |",
-          "|-------|------|-------|--------|",
-        );
-        const sorted = [...byModel.entries()].sort(
-          (a, b) => b[1].cost - a[1].cost,
-        );
-        for (const [model, stats] of sorted) {
-          lines.push(
-            `| ${model} | ${formatCost(stats.cost)} | ${stats.calls} | ${formatTokens(stats.tokens)} |`,
+          `**Total Cost**: ${formatCost(totalCost)} | **Avg Latency**: ${formatDuration(avgLatency)}`,
+          "",
+          `| Time | Model | Tokens | Cost | Latency | Cache |`,
+          `|------|-------|--------|------|---------|-------|`,
+        ];
+
+        for (const t of traces) {
+          const time = new Date(t.timestamp).toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          const tokens = `${formatTokens(t.inputTokens)}→${formatTokens(t.outputTokens)}`;
+          const cache =
+            t.cacheReadTokens > 0
+              ? `${formatTokens(t.cacheReadTokens)} hit`
+              : "—";
+          const status = t.statusCode === 200 ? "" : ` ❌${t.statusCode}`;
+          outLines.push(
+            `| ${time} | ${t.model}${status} | ${tokens} | ${formatCost(t.costUsd)} | ${formatDuration(t.latencyMs)} | ${cache} |`,
           );
         }
-      }
 
-      // Budget context
-      const data = await candela.getDashboardData(24);
-      if (data?.budget) {
-        const b = data.budget;
-        lines.push(
-          "",
-          `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} (${b.percentUsed.toFixed(0)}% used)`,
-        );
-      }
-
-      return {
-        title: `Session: ${formatCost(totalCost)} (${traces.length} calls, ${elapsed})`,
-        output: lines.join("\n"),
-      };
-    },
-  });
-
-  // ── candela_inspect_trace ───────────────────────────────────────────────
-
-  const inspectTrace = tool({
-    description:
-      "Inspect a specific trace by its trace ID. " +
-      "Shows the full span tree with per-span token breakdown, latency, cost, status, and cache stats. " +
-      "Use this when the user wants to investigate a specific LLM call or debug latency/cost anomalies. " +
-      "Get trace IDs from candela_list_traces first.",
-    args: {
-      trace_id: tool.schema.string().describe("The trace ID to inspect"),
-    },
-    async execute(args) {
-      const traceData = await fetchTrace(candelaUrl, args.trace_id);
-      if (!traceData) {
         return {
-          title: "Trace Not Found",
-          output: `Could not fetch trace \`${args.trace_id}\`. It may not exist or Candela may be unavailable.`,
+          title: `Traces: ${traces.length} calls, ${formatCost(totalCost)}`,
+          output: outLines.join("\n"),
         };
       }
-
-      const spans = traceData.spans ?? [];
-      if (spans.length === 0) {
-        return {
-          title: "Empty Trace",
-          output: `Trace \`${args.trace_id}\` exists but has no spans.`,
-        };
-      }
-
-      // Aggregate trace-level stats
-      const totalCost = spans.reduce(
-        (sum: number, s: SpanRecord) => sum + s.costUsd,
-        0,
-      );
-      const totalInput = spans.reduce(
-        (sum: number, s: SpanRecord) => sum + s.inputTokens,
-        0,
-      );
-      const totalOutput = spans.reduce(
-        (sum: number, s: SpanRecord) => sum + s.outputTokens,
-        0,
-      );
-      const totalCache = spans.reduce(
-        (sum: number, s: SpanRecord) => sum + s.cacheReadTokens,
-        0,
-      );
-
-      const lines: string[] = [
-        `## Trace \`${args.trace_id.slice(0, 12)}…\``,
-        "",
-        `| Metric | Value |`,
-        `|--------|-------|`,
-        `| Spans | ${spans.length} |`,
-        `| Total Cost | ${formatCost(totalCost)} |`,
-        `| Input Tokens | ${formatTokens(totalInput)} |`,
-        `| Output Tokens | ${formatTokens(totalOutput)} |`,
-      ];
-
-      if (totalCache > 0) {
-        lines.push(`| Cache Read | ${formatTokens(totalCache)} |`);
-        if (totalInput > 0) {
-          const hitRate = Math.min(
-            100,
-            (totalCache / totalInput) * 100,
-          ).toFixed(0);
-          lines.push(`| Cache Hit Rate | ${hitRate}% |`);
-        }
-      }
-
-      // Root span details
-      const root =
-        spans.find(
-          (s: SpanRecord) => !s.parentSpanId || s.parentSpanId === "",
-        ) ?? spans[0];
-      if (root) {
-        lines.push(
-          "",
-          "### Root Span",
-          "",
-          `| Field | Value |`,
-          `|-------|-------|`,
-          `| Model | ${root.model} |`,
-          `| Provider | ${root.provider || "—"} |`,
-          `| Status | ${root.statusCode === 200 ? "✅ 200" : root.statusCode === 0 ? "❓ unknown" : `❌ ${root.statusCode}`} |`,
-          `| Latency | ${formatDuration(root.latencyMs)} |`,
-          `| Cost | ${formatCost(root.costUsd)} |`,
-        );
-
-        if (root.cacheReadTokens > 0 || root.cacheCreationTokens > 0) {
-          lines.push(
-            `| Cache Read | ${formatTokens(root.cacheReadTokens)} |`,
-            `| Cache Write | ${formatTokens(root.cacheCreationTokens)} |`,
-          );
-        }
-      }
-
-      // Span waterfall (if multiple spans)
-      if (spans.length > 1) {
-        lines.push(
-          "",
-          "### Span Waterfall",
-          "",
-          "| # | Span ID | Model | Latency | Cost | Status |",
-          "|---|---------|-------|---------|------|--------|",
-        );
-
-        for (let i = 0; i < spans.length; i++) {
-          const s = spans[i];
-          const depth = s.parentSpanId ? "  └─ " : "";
-          const status =
-            s.statusCode === 200
-              ? "✅"
-              : s.statusCode === 0
-                ? "❓"
-                : `❌${s.statusCode}`;
-          lines.push(
-            `| ${i + 1} | ${depth}${s.spanId.slice(0, 8)} | ${s.model} | ${formatDuration(s.latencyMs)} | ${formatCost(s.costUsd)} | ${status} |`,
-          );
-        }
-      }
-
-      return {
-        title: `Trace: ${formatCost(totalCost)} · ${spans.length} span${spans.length > 1 ? "s" : ""} · ${root?.model ?? "unknown"}`,
-        output: lines.join("\n"),
-      };
     },
   });
 
@@ -709,9 +681,7 @@ export function createCandelaTools(
   return {
     candela_cost_summary: costSummary,
     candela_check_budget: checkBudget,
-    candela_list_traces: listTraces,
-    candela_session_cost: sessionCost,
-    candela_inspect_trace: inspectTrace,
+    candela_traces: listTraces,
     candela_browse_catalog: browseCatalog,
   };
 }

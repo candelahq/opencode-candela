@@ -112,7 +112,7 @@ function makeDashboard(budget?: {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("candela_session_cost", () => {
+describe("candela_cost_summary (session)", () => {
   const CANDELA_URL = "http://localhost:4100";
 
   beforeEach(() => {
@@ -130,7 +130,10 @@ describe("candela_session_cost", () => {
     const client = makeMockClient();
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
 
-    const result = await tools.candela_session_cost.execute({}, makeContext());
+    const result = await tools.candela_cost_summary.execute(
+      { scope: "session" },
+      makeContext(),
+    );
 
     expect(result).toEqual(
       expect.objectContaining({ title: "No Active Session" }),
@@ -152,7 +155,10 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = await tools.candela_session_cost.execute({}, makeContext());
+    const result = await tools.candela_cost_summary.execute(
+      { scope: "session" },
+      makeContext(),
+    );
 
     expect(result).toEqual(
       expect.objectContaining({ title: "Candela Unavailable" }),
@@ -171,7 +177,10 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = await tools.candela_session_cost.execute({}, makeContext());
+    const result = await tools.candela_cost_summary.execute(
+      { scope: "session" },
+      makeContext(),
+    );
 
     expect(result).toEqual(
       expect.objectContaining({ title: "No Session Costs" }),
@@ -218,8 +227,8 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = (await tools.candela_session_cost.execute(
-      {},
+    const result = (await tools.candela_cost_summary.execute(
+      { scope: "session" },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -256,8 +265,8 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = (await tools.candela_session_cost.execute(
-      {},
+    const result = (await tools.candela_cost_summary.execute(
+      { scope: "session" },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -298,8 +307,8 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = (await tools.candela_session_cost.execute(
-      {},
+    const result = (await tools.candela_cost_summary.execute(
+      { scope: "session" },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -328,8 +337,8 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = (await tools.candela_session_cost.execute(
-      {},
+    const result = (await tools.candela_cost_summary.execute(
+      { scope: "session" },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -353,7 +362,10 @@ describe("candela_session_cost", () => {
       makeSession({ startTime: sessionStart }),
     );
 
-    const result = await tools.candela_session_cost.execute({}, makeContext());
+    const result = await tools.candela_cost_summary.execute(
+      { scope: "session" },
+      makeContext(),
+    );
 
     expect(result).toEqual(
       expect.objectContaining({ title: "Candela Unavailable" }),
@@ -399,7 +411,7 @@ describe("makeTimeRangeFromDate", () => {
 
 // ── candela_inspect_trace ─────────────────────────────────────────────────────
 
-describe("candela_inspect_trace", () => {
+describe("candela_traces (inspect)", () => {
   const CANDELA_URL = "http://localhost:4100";
 
   afterEach(() => {
@@ -454,8 +466,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     );
 
@@ -476,8 +488,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     );
 
@@ -503,8 +515,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = (await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = (await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -524,8 +536,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = (await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = (await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -544,8 +556,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = (await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = (await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -569,8 +581,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = (await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = (await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     )) as { title: string; output: string };
 
@@ -593,8 +605,8 @@ describe("candela_inspect_trace", () => {
     );
 
     const tools = createCandelaTools(client, CANDELA_URL, makeSession());
-    const result = (await tools.candela_inspect_trace.execute(
-      { trace_id: "abc123" },
+    const result = (await tools.candela_traces.execute(
+      { trace_id: "abc123", limit: 10 },
       makeContext(),
     )) as { title: string; output: string };
 
