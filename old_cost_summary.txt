@@ -1,0 +1,118 @@
+  const costSummary = tool({
+    description:
+      "Get a summary of LLM costs for the current session or time period. " +
+      "Shows total spend, token usage, request count, and per-model breakdown. " +
+      "Use this when the user asks about costs, spending, usage, or tokens.",
+    args: {
+      hours: tool.schema
+        .number()
+        .min(1)
+        .max(720)
+        .default(24)
+        .describe(
+          "Number of hours to look back. Default 24 (today). Use 1 for current session, 168 for this week.",
+        ),
+      model_filter: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Optional model name filter (e.g. 'claude-sonnet-4-20250514'). Shows only costs for this model.",
+        ),
+    },
+    async execute(args) {
+      const data = await candela.getDashboardData(args.hours);
+      if (!data) {
+        return {
+          title: "Candela Unavailable",
+          output:
+            "Candela server is not reachable. Make sure `candela` is running locally or set CANDELA_PROXY_URL.",
+        };
+      }
+
+      const { usage, models } = data;
+
+      if (usage.requestCount === 0) {
+        return {
+          title: "No Usage",
+          output: `No LLM calls recorded in the last ${args.hours} hour(s).`,
+        };
+      }
+
+      // Filter models if requested
+      let filteredModels = models;
+      if (args.model_filter) {
+        const filter = args.model_filter.toLowerCase();
+        filteredModels = models.filter(
+          (m) =>
+            m.model.toLowerCase().includes(filter) ||
+            m.provider.toLowerCase().includes(filter),
+        );
+      }
+
+      // Build output
+      const lines: string[] = [
+        `## Cost Summary (last ${args.hours}h)`,
+        "",
+        `| Metric | Value |`,
+        `|--------|-------|`,
+        `| Total Cost | ${formatCost(usage.totalCostUsd)} |`,
+        `| Total Tokens | ${formatTokens(usage.totalTokens)} (${formatTokens(usage.inputTokens)} in / ${formatTokens(usage.outputTokens)} out) |`,
+        `| LLM Calls | ${usage.requestCount} |`,
+        `| Avg Cost/Call | ${formatCost(usage.totalCostUsd / usage.requestCount)} |`,
+      ];
+
+      // Budget context
+      if (data.budget) {
+        const b = data.budget;
+        lines.push(
+          "",
+          `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} daily (${b.percentUsed.toFixed(0)}% used)`,
+        );
+      }
+
+      // Cache effectiveness
+      const totalCacheRead = models.reduce((s, m) => s + m.cacheReadTokens, 0);
+      if (totalCacheRead > 0 && usage.inputTokens > 0) {
+        const hitRate = Math.min(
+          100,
+          (totalCacheRead / usage.inputTokens) * 100,
+        ).toFixed(0);
+        lines.push(
+          "",
+          `**Cache**: ${hitRate}% hit rate (${formatTokens(totalCacheRead)} cached reads of ${formatTokens(usage.inputTokens)} input)`,
+        );
+      }
+
+      // Model breakdown
+      if (filteredModels.length > 0) {
+        lines.push(
+          "",
+          `### ${args.model_filter ? "Filtered" : "Per-Model"} Breakdown`,
+          "",
+          `| Model | Provider | Tokens | Cost | Calls | Cache |`,
+          `|-------|----------|--------|------|-------|-------|`,
+        );
+
+        const sorted = [...filteredModels].sort(
+          (a, b) => b.totalCostUsd - a.totalCostUsd,
+        );
+        for (const m of sorted.slice(0, 15)) {
+          const cacheInfo =
+            m.cacheReadTokens > 0
+              ? `${formatTokens(m.cacheReadTokens)} read`
+              : "—";
+          lines.push(
+            `| ${m.model} | ${m.provider} | ${formatTokens(m.totalTokens)} | ${formatCost(m.totalCostUsd)} | ${m.requestCount} | ${cacheInfo} |`,
+          );
+        }
+        if (sorted.length > 15) {
+          lines.push(`| ... | +${sorted.length - 15} more models | | | | |`);
+        }
+      }
+
+      return {
+        title: `Cost: ${formatCost(usage.totalCostUsd)} (${args.hours}h)`,
+        output: lines.join("\n"),
+      };
+    },
+  });

@@ -1,0 +1,117 @@
+  const sessionCost = tool({
+    description:
+      "Get the cost of the current coding session. " +
+      "Shows total spend, token usage, per-model breakdown, and cache stats since the session started. " +
+      "Use this when the user asks about current session cost, this session's spending, or how much this conversation cost.",
+    args: {},
+    async execute() {
+      const session = getSession();
+      if (!session.startTime) {
+        return {
+          title: "No Active Session",
+          output:
+            "No active session detected. Session tracking starts when you begin a conversation.",
+        };
+      }
+
+      // Fetch spans from session start to now
+      const traces = await fetchSessionTraces(candelaUrl, session.startTime);
+      if (!traces) {
+        return {
+          title: "Candela Unavailable",
+          output: "Could not fetch session data. Make sure Candela is running.",
+        };
+      }
+
+      if (traces.length === 0) {
+        const elapsed = formatSessionDuration(session.startTime);
+        return {
+          title: "No Session Costs",
+          output: `Session started ${elapsed} ago but no LLM calls recorded yet.`,
+        };
+      }
+
+      // Aggregate
+      const totalCost = traces.reduce((sum, t) => sum + t.costUsd, 0);
+      const totalInput = traces.reduce((sum, t) => sum + t.inputTokens, 0);
+      const totalOutput = traces.reduce((sum, t) => sum + t.outputTokens, 0);
+      const totalCacheRead = traces.reduce(
+        (sum, t) => sum + t.cacheReadTokens,
+        0,
+      );
+      const avgLatency =
+        traces.reduce((sum, t) => sum + t.latencyMs, 0) / traces.length;
+      const elapsed = formatSessionDuration(session.startTime);
+
+      const lines: string[] = [
+        `## Session Cost (${elapsed})`,
+        "",
+        session.id ? `**Session**: \`${session.id.slice(0, 8)}...\`` : "",
+        "",
+        `| Metric | Value |`,
+        `|--------|-------|`,
+        `| Total Cost | ${formatCost(totalCost)} |`,
+        `| LLM Calls | ${traces.length} |`,
+        `| Input Tokens | ${formatTokens(totalInput)} |`,
+        `| Output Tokens | ${formatTokens(totalOutput)} |`,
+        `| Avg Latency | ${formatDuration(avgLatency)} |`,
+        `| Cost/Call | ${formatCost(totalCost / traces.length)} |`,
+      ];
+
+      // Cache stats
+      if (totalCacheRead > 0 && totalInput > 0) {
+        const hitRate = Math.min(
+          100,
+          (totalCacheRead / totalInput) * 100,
+        ).toFixed(0);
+        lines.push(`| Cache Hit Rate | ${hitRate}% |`);
+      }
+
+      // Per-model breakdown
+      const byModel = new Map<
+        string,
+        { cost: number; calls: number; tokens: number }
+      >();
+      for (const t of traces) {
+        const key = t.model || "unknown";
+        const existing = byModel.get(key) ?? { cost: 0, calls: 0, tokens: 0 };
+        existing.cost += t.costUsd;
+        existing.calls += 1;
+        existing.tokens += t.inputTokens + t.outputTokens;
+        byModel.set(key, existing);
+      }
+
+      if (byModel.size > 0) {
+        lines.push(
+          "",
+          "### Per-Model Breakdown",
+          "",
+          "| Model | Cost | Calls | Tokens |",
+          "|-------|------|-------|--------|",
+        );
+        const sorted = [...byModel.entries()].sort(
+          (a, b) => b[1].cost - a[1].cost,
+        );
+        for (const [model, stats] of sorted) {
+          lines.push(
+            `| ${model} | ${formatCost(stats.cost)} | ${stats.calls} | ${formatTokens(stats.tokens)} |`,
+          );
+        }
+      }
+
+      // Budget context
+      const data = await candela.getDashboardData(24);
+      if (data?.budget) {
+        const b = data.budget;
+        lines.push(
+          "",
+          `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} (${b.percentUsed.toFixed(0)}% used)`,
+        );
+      }
+
+      return {
+        title: `Session: ${formatCost(totalCost)} (${traces.length} calls, ${elapsed})`,
+        output: lines.join("\n"),
+      };
+    },
+  });

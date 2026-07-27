@@ -25,8 +25,6 @@ import { CandelaClient } from "./candela-client.js";
 import { createConfigTools } from "./config-tools.js";
 import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
-import { getActiveMission, pruneCompleted } from "./mission-store.js";
-import { createMissionTools } from "./mission-tools.js";
 import { createCandelaTools } from "./tools.js";
 import { formatCost, formatTokens } from "./utils.js";
 
@@ -113,6 +111,10 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionBaseline: { cost: number; tokens: number; calls: number } | null =
     null;
 
+  let activeTaskId: string | null = null;
+  let activeSubtaskParent: string | null = null;
+  let activeSubtaskTitle: string | null = null;
+
   /** Accessor for session state — tools read this lazily. */
   const getSession = () => ({
     startTime: sessionStartTime,
@@ -129,16 +131,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     : undefined;
   const configTools = createConfigTools(candela, candelaUrl, client);
   // Phase 3: Context injection — cost awareness in system prompt
-  const context = alive
-    ? createContextHook(candela, () => getActiveMission())
-    : undefined;
-
-  // Prune old missions on startup (90-day retention)
-  pruneCompleted(90);
-  const missionTools = createMissionTools(
-    client as unknown as Parameters<typeof createMissionTools>[0],
-  );
-  const tools = { ...configTools, ...costTools, ...missionTools };
+  const context = alive ? createContextHook(candela) : undefined;
+  const tools = { ...configTools, ...costTools };
 
   return {
     tool: tools,
@@ -155,20 +149,21 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       if (sessionId) {
         output.env.CANDELA_SESSION_ID = sessionId;
       }
-      const mission = getActiveMission();
-      if (mission) {
-        output.env.CANDELA_MISSION_ID = mission.id;
-      }
     },
 
-    /**
-     * Inject X-Session-Id header into LLM proxy requests.
-     * This ties each LLM call to the current OpenCode session in Candela,
-     * enabling per-session cost queries and trace filtering.
-     */
     "chat.headers": async (_input, output) => {
       if (!alive || !sessionId) return;
       output.headers["X-Session-Id"] = sessionId;
+      if (activeTaskId) {
+        output.headers["X-Task-Id"] = activeTaskId;
+      }
+      if (activeSubtaskParent) {
+        output.headers["X-Subtask-Parent"] = activeSubtaskParent;
+      }
+      if (activeSubtaskTitle) {
+        // base64 encode or safe-encode the title if needed, but assuming headers can take it
+        output.headers["X-Subtask-Title"] = activeSubtaskTitle;
+      }
     },
 
     /**
@@ -191,6 +186,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               message: "🔄 Config file changed — Candela state refreshed",
             },
           });
+        }
+      }
+
+      if (event.type === "todo.updated") {
+        const payload = event.properties as any;
+        if (payload?.active) {
+          activeTaskId = payload.id ?? null;
+          activeSubtaskParent = payload.parentId ?? null;
+          activeSubtaskTitle = payload.title ?? null;
+        } else if (payload?.id && payload.id === activeTaskId) {
+          activeTaskId = null;
+          activeSubtaskParent = null;
+          activeSubtaskTitle = null;
         }
       }
 
