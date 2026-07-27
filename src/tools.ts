@@ -9,7 +9,7 @@
  * Phase 1 tools:
  * - candela_cost_summary: Session/daily cost breakdown with model detail
  * - candela_check_budget: Budget status, grants, and remaining balance
- * - candela_list_traces: Recent LLM traces with cost and latency
+ * - candela_traces: Recent LLM traces with cost and latency
  */
 
 import { tool } from "@opencode-ai/plugin";
@@ -157,7 +157,7 @@ export function createCandelaTools(
           );
         }
 
-        const byModel = new Map();
+        const byModel = new Map<string, { cost: number; calls: number; tokens: number }>();
         for (const t of filteredTraces) {
           const key = t.model || "unknown";
           const existing = byModel.get(key) ?? { cost: 0, calls: 0, tokens: 0 };
@@ -380,7 +380,7 @@ export function createCandelaTools(
     },
   });
 
-  // ── candela_list_traces ───────────────────────────────────────────────────
+  // ── candela_traces ────────────────────────────────────────────────────────
 
   const listTraces = tool({
     description:
@@ -405,12 +405,12 @@ export function createCandelaTools(
       model_filter: tool.schema
         .string()
         .optional()
-        .describe("Optional model name filter."),
+        .describe("Optional model name filter. Only applies when trace_id is omitted."),
       min_cost: tool.schema
         .number()
         .optional()
         .describe(
-          "Optional minimum cost in USD. Use to find expensive calls (e.g. 0.10 for calls over 10 cents).",
+          "Optional minimum cost in USD. Use to find expensive calls (e.g. 0.10 for calls over 10 cents). Only applies when trace_id is omitted.",
         ),
     },
     async execute(args) {
