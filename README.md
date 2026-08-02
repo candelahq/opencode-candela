@@ -1,8 +1,8 @@
-# opencode-candela
+# @candelahq/opencode
 
 OpenCode plugin for [Candela](https://github.com/candelahq/candela) — session tracking, cost toasts, rich budget warnings, and budget-aware session compaction.
 
-[![npm](https://img.shields.io/npm/v/opencode-candela)](https://www.npmjs.com/package/opencode-candela)
+[![npm](https://img.shields.io/npm/v/@candelahq/opencode)](https://www.npmjs.com/package/@candelahq/opencode)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 ## What It Does
@@ -29,7 +29,7 @@ Add to your `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-candela"]
+  "plugin": ["@candelahq/opencode"]
 }
 ```
 
@@ -38,11 +38,11 @@ Add to your `opencode.json`:
 ```bash
 # Project-scoped
 mkdir -p .opencode/plugins
-cp -r node_modules/opencode-candela/src .opencode/plugins/opencode-candela/
+cp -r node_modules/@candelahq/opencode/src .opencode/plugins/opencode-candela/
 
 # Global
 mkdir -p ~/.config/opencode/plugins/opencode-candela
-cp -r node_modules/opencode-candela/src/* ~/.config/opencode/plugins/opencode-candela/
+cp -r node_modules/@candelahq/opencode/src/* ~/.config/opencode/plugins/opencode-candela/
 ```
 
 ---
@@ -121,7 +121,7 @@ For full integration, use this plugin alongside Candela providers in your `openc
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-candela"],
+  "plugin": ["@candelahq/opencode"],
   "provider": {
     "candela-anthropic": {
       "npm": "@ai-sdk/openai-compatible",
