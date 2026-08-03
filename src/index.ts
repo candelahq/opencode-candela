@@ -62,6 +62,7 @@ interface SessionAnalyticsEntry {
   sessionId: string;
   duration: number;
   toolCalls: number;
+  toolUsage: Record<string, number>;
   totalCost: number;
   pluginVersion: string;
   models: string[];
@@ -166,6 +167,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   // Track per-session state
   let sessionStartTime: Date | null = null;
   let sessionToolCalls = 0;
+  const sessionToolUsage = new Map<string, number>();
   let sessionId: string | null = null;
   let sessionBaseline: { cost: number; tokens: number; calls: number } | null =
     null;
@@ -178,6 +180,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const getSession = () => ({
     startTime: sessionStartTime,
     toolCalls: sessionToolCalls,
+    toolUsage: Object.fromEntries(sessionToolUsage),
     id: sessionId,
   });
 
@@ -274,6 +277,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       if (event.type === "session.created") {
         sessionStartTime = new Date();
         sessionToolCalls = 0;
+        sessionToolUsage.clear();
         // Use OpenCode's session ID if available, fall back to UUID
         const info = (event as { properties?: { info?: { id?: string } } })
           .properties?.info;
@@ -508,19 +512,21 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             sessionId,
             duration: sessionDuration,
             toolCalls: sessionToolCalls,
+            toolUsage: Object.fromEntries(sessionToolUsage),
             totalCost: sessionCost,
-            pluginVersion: "0.6.0",
+            pluginVersion: "0.5.0",
             models: modelsUsed,
           });
         }
       }
     },
 
-    /**
-     * Track tool executions for session attribution.
-     */
-    "tool.execute.after": async () => {
+    "tool.execute.after": async (input: { tool: string }) => {
       sessionToolCalls++;
+      sessionToolUsage.set(
+        input.tool,
+        (sessionToolUsage.get(input.tool) ?? 0) + 1,
+      );
     },
 
     /**

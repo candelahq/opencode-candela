@@ -93,6 +93,8 @@ export interface SessionState {
   startTime: Date | null;
   /** Number of tool calls in this session. */
   toolCalls: number;
+  /** Per-tool call counts for this session. */
+  toolUsage: Record<string, number>;
   /** OpenCode session ID, or null if no active session. */
   id: string | null;
 }
@@ -112,16 +114,16 @@ export function createCandelaTools(
 
   const costSummary = tool({
     description:
-      "Get a summary of LLM costs for the current session, time period, or team. " +
+      "Get a summary of LLM costs for the current session, time period, team, or tool usage. " +
       "Shows total spend, token usage, request count, and per-model breakdown. " +
-      "Use 'team' scope to see a team-wide usage leaderboard. " +
+      "Use 'team' scope for team leaderboard, 'tools' for Candela tool usage stats. " +
       "Use this when the user asks about costs, spending, usage, or tokens.",
     args: {
       scope: tool.schema
-        .enum(["session", "1h", "24h", "7d", "team"])
+        .enum(["session", "1h", "24h", "7d", "team", "tools"])
         .default("24h")
         .describe(
-          "Time period to analyze. Use 'session' for current coding session, 'team' for team leaderboard.",
+          "Time period to analyze. Use 'session' for current coding session, 'team' for team leaderboard, 'tools' for tool usage telemetry.",
         ),
       model_filter: tool.schema
         .string()
@@ -140,6 +142,24 @@ export function createCandelaTools(
           lines.push(
             `**${u.displayName || u.email || u.userId}**: ${formatCost(u.costUsd)} | ${u.callCount} calls | ${u.totalTokens.toLocaleString()} tokens | top model: ${u.topModel}`,
           );
+        }
+        return lines.join("\n");
+      }
+
+      if (args.scope === "tools") {
+        const session = getSession();
+        const usage = session.toolUsage;
+        const entries = Object.entries(usage).sort((a, b) => b[1] - a[1]);
+        if (entries.length === 0) {
+          return "No Candela tool calls this session yet.";
+        }
+        const lines = [
+          `## Tool Usage (session: ${session.toolCalls} total calls)`,
+          "",
+        ];
+        for (const [name, count] of entries) {
+          const bar = "█".repeat(Math.min(count, 20));
+          lines.push(`- **${name}**: ${count} calls ${bar}`);
         }
         return lines.join("\n");
       }
