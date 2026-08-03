@@ -34,6 +34,9 @@ import {
 } from "./utils.js";
 
 function formatForecastTime(hoursUntilExhaustion: number): string {
+  if (hoursUntilExhaustion <= 0) {
+    return "budget already exhausted";
+  }
   if (hoursUntilExhaustion > 168) {
     return "Budget runway: > 7 days";
   }
@@ -376,9 +379,11 @@ export function createCandelaTools(
                       (a, b) => a.inputPerMillion - b.inputPerMillion,
                     );
                     const cheapest = sameCategory[0];
+                    const { smartRouting } = resolveSettings();
                     if (
                       cheapest.inputPerMillion <
-                      catalogModel.inputPerMillion * 0.5
+                      catalogModel.inputPerMillion *
+                        (1 - smartRouting.savingsThreshold)
                     ) {
                       const savingsPercent = Math.round(
                         (1 -

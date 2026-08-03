@@ -140,9 +140,19 @@ export function updateSmartRouting(
   const persisted = readPersisted();
   const current = persisted.smartRouting ?? {};
 
+  let { budgetThreshold, savingsThreshold } = update;
+  if (budgetThreshold !== undefined) {
+    budgetThreshold = Math.max(0, Math.min(1, budgetThreshold));
+  }
+  if (savingsThreshold !== undefined) {
+    savingsThreshold = Math.max(0, Math.min(1, savingsThreshold));
+  }
+
   persisted.smartRouting = {
     ...current,
     ...update,
+    ...(budgetThreshold !== undefined && { budgetThreshold }),
+    ...(savingsThreshold !== undefined && { savingsThreshold }),
   };
 
   writePersisted(persisted);

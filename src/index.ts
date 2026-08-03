@@ -175,9 +175,12 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const configTools = createConfigTools(candela, candelaUrl, client);
   // Phase 3: Context injection — cost awareness in system prompt
   // Smart routing is opt-in: enable via CANDELA_SMART_ROUTING=true
-  const settings = resolveSettings();
   const context = alive
-    ? createContextHook(candela, process.cwd(), settings.smartRouting)
+    ? createContextHook(
+        candela,
+        process.cwd(),
+        () => resolveSettings().smartRouting,
+      )
     : undefined;
   const tools = { ...configTools, ...costTools };
 

@@ -38,17 +38,31 @@ import { formatCost } from "./utils.js";
  * - Has input pricing < current model's pricing * (1 - savingsThreshold)
  * - Has a context window ≥ 32K (usable for coding tasks)
  */
+function matchCatalogEntry(
+  catalog: CatalogEntry[],
+  modelId: string,
+): CatalogEntry | undefined {
+  // Prefer exact match
+  const exact = catalog.find((c) => c.modelId === modelId);
+  if (exact) return exact;
+  // Fall back to longest substring match
+  let best: CatalogEntry | undefined;
+  let bestLen = 0;
+  for (const c of catalog) {
+    if (modelId.includes(c.modelId) && c.modelId.length > bestLen) {
+      best = c;
+      bestLen = c.modelId.length;
+    }
+  }
+  return best;
+}
+
 function findCheapestAlternative(
   currentModelId: string,
   catalog: CatalogEntry[],
   savingsThreshold: number,
 ): { model: CatalogEntry; savingsPercent: number } | null {
-  const currentLower = currentModelId.toLowerCase();
-  const current = catalog.find(
-    (e) =>
-      e.modelId.toLowerCase() === currentLower ||
-      currentLower.includes(e.modelId.toLowerCase()),
-  );
+  const current = matchCatalogEntry(catalog, currentModelId);
 
   if (!current || current.inputPerMillion === 0) return null;
 
@@ -123,13 +137,12 @@ function budgetGuidance(fraction: number): string {
  *
  * @param candela        API client for fetching dashboard/catalog data
  * @param projectDir     Working directory for project-scoped memory notes
- * @param routingSettings Smart routing config (enabled, thresholds). Resolved
- *                        once at plugin init from env vars / settings file.
+ * @param getRoutingSettings Smart routing config getter.
  */
 export function createContextHook(
   candela: CandelaClient,
   projectDir: string,
-  routingSettings?: SmartRoutingSettings,
+  getRoutingSettings?: () => SmartRoutingSettings,
 ) {
   // Cache to avoid hammering the API on every message
   let cachedContext: string | null = null;
@@ -140,7 +153,7 @@ export function createContextHook(
 
   // Smart routing cache — catalog doesn't change often
   let cachedCatalog: CatalogEntry[] | null = null;
-  let catalogFetchedAt = 0;
+  let lastCatalogAttempt = 0;
   const CATALOG_TTL = 300_000; // 5 minutes
 
   const hook = async (
@@ -219,17 +232,17 @@ export function createContextHook(
     }
 
     // ── Smart Model Routing (opt-in) ──────────────────────────────────────
-    const routing = routingSettings;
+    const routing = getRoutingSettings?.();
     if (
       routing?.enabled &&
       modelId &&
       cachedFraction >= routing.budgetThreshold
     ) {
       // Fetch catalog (cached for 5 minutes)
-      if (!cachedCatalog || now - catalogFetchedAt > CATALOG_TTL) {
+      if (now - lastCatalogAttempt > CATALOG_TTL) {
+        lastCatalogAttempt = now;
         try {
           cachedCatalog = await candela.getModelCatalog();
-          catalogFetchedAt = now;
         } catch {
           // Non-fatal — skip routing suggestion this time
         }
@@ -244,11 +257,7 @@ export function createContextHook(
 
         if (alt) {
           // Look up current model pricing for the display
-          const currentEntry = cachedCatalog.find(
-            (e) =>
-              e.modelId.toLowerCase() === modelId.toLowerCase() ||
-              modelId.toLowerCase().includes(e.modelId.toLowerCase()),
-          );
+          const currentEntry = matchCatalogEntry(cachedCatalog, modelId);
           const currentPrice = currentEntry
             ? ` (${formatPricePerMillion(currentEntry.inputPerMillion)} in)`
             : "";
@@ -258,7 +267,7 @@ export function createContextHook(
           modelContext.push(
             `💡 Smart routing: For simple tasks, use ${alt.model.modelId} ` +
               `(${formatPricePerMillion(alt.model.inputPerMillion)} in) — ` +
-              `save ~${alt.savingsPercent}%.`,
+              `save ~${alt.savingsPercent}% on input pricing.`,
           );
         }
       }

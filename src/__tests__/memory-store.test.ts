@@ -14,18 +14,17 @@ import {
 // Use a temp directory so tests don't pollute the real config
 let testDir: string;
 
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    homedir: () => testDir,
+  };
+});
+
 beforeEach(() => {
   testDir = join(tmpdir(), `candela-memory-test-${process.pid}-${Date.now()}`);
   mkdirSync(testDir, { recursive: true });
-
-  // Mock homedir so getMemoryPath writes inside testDir
-  vi.mock("node:os", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("node:os")>();
-    return {
-      ...actual,
-      homedir: () => testDir,
-    };
-  });
 });
 
 afterEach(() => {

@@ -6,7 +6,7 @@
  * Uses atomic writes (tmp → rename) to prevent corruption on crash.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -28,20 +28,31 @@ function emptyStore(): MemoryStore {
   return { version: 1, entries: [] };
 }
 
+const projectHashCache = new Map<string, string>();
+
 /** Get project identity: git remote URL if available, else absolute path. */
 function getProjectHash(projectDir: string): string {
+  if (projectHashCache.has(projectDir)) {
+    return projectHashCache.get(projectDir)!;
+  }
+  let hash: string;
   try {
-    const remote = execSync("git remote get-url origin", {
+    const remote = execFileSync("git", ["remote", "get-url", "origin"], {
       cwd: projectDir,
       encoding: "utf-8",
       timeout: 3000,
     }).trim();
-    if (remote)
-      return createHash("sha256").update(remote).digest("hex").slice(0, 16);
+    if (remote) {
+      hash = createHash("sha256").update(remote).digest("hex").slice(0, 16);
+    } else {
+      hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
+    }
   } catch {
     // Not a git repo or no remote
+    hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   }
-  return createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
+  projectHashCache.set(projectDir, hash);
+  return hash;
 }
 
 export function getMemoryPath(projectDir: string): string {

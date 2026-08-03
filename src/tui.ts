@@ -181,7 +181,7 @@ export const tui: TuiPlugin = async (api) => {
       status_bar: () => {
         refresh();
         const parts: string[] = [];
-        parts.push(`🕯️ ${formatCost(totalCost24h)} today`);
+        parts.push(`🕯️ ${formatCost(totalCost24h)} 24h`);
         if (budgetPct !== null) {
           parts.push(`${budgetEmoji}${budgetPct}%`);
         }
@@ -242,7 +242,8 @@ export const tui: TuiPlugin = async (api) => {
           name: "cost",
           aliases: ["spend"],
         },
-        onSelect: () => {
+        onSelect: async () => {
+          await refresh();
           // Inject a user message that triggers the cost summary tool
           api.ui.toast({
             title: "💰 Cost Summary",
@@ -260,7 +261,8 @@ export const tui: TuiPlugin = async (api) => {
           name: "budget",
           aliases: ["remaining"],
         },
-        onSelect: () => {
+        onSelect: async () => {
+          await refresh();
           const msg =
             budgetPct !== null && budgetRemaining !== null
               ? `${budgetEmoji} ${budgetPct}% used · ${formatCost(budgetRemaining)} remaining`
@@ -273,9 +275,9 @@ export const tui: TuiPlugin = async (api) => {
         },
       },
       {
-        title: "Candela: Model Catalog",
+        title: "Candela: Top Models by Usage",
         value: "candela.models",
-        description: "Browse available models with pricing",
+        description: "Show top models by usage over the last 24h",
         category: "Candela",
         slash: {
           name: "models",

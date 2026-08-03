@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CandelaClient } from "../candela-client.js";
 import { createContextHook } from "../context.js";
 
+vi.mock("../memory-store.js", () => ({ listEntries: () => [] }));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeDashboardData(overrides: {
