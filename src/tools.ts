@@ -16,11 +16,52 @@ import { tool } from "@opencode-ai/plugin";
 import type { CandelaClient } from "./candela-client.js";
 import { makeTimeRange, makeTimeRangeFromDate } from "./candela-client.js";
 import {
+  deleteEntry,
+  getEntry,
+  listEntries,
+  setEntry,
+} from "./memory-store.js";
+import {
+  getSettingsPath,
+  resolveSettings,
+  updateSmartRouting,
+} from "./settings.js";
+import {
   budgetBar,
   formatCost,
   formatDuration,
   formatTokens,
 } from "./utils.js";
+
+function formatForecastTime(hoursUntilExhaustion: number): string {
+  if (hoursUntilExhaustion > 168) {
+    return "Budget runway: > 7 days";
+  }
+  const now = new Date();
+  const exhaustTime = new Date(now.getTime() + hoursUntilExhaustion * 3600000);
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const isTomorrow =
+    exhaustTime.getDate() === tomorrow.getDate() &&
+    exhaustTime.getMonth() === tomorrow.getMonth();
+
+  const timeStr = exhaustTime.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+  if (isTomorrow) {
+    return `tomorrow at ${timeStr}`;
+  }
+
+  const h = Math.floor(hoursUntilExhaustion);
+  const m = Math.round((hoursUntilExhaustion - h) * 60);
+  if (h > 0) {
+    return `in ~${h}h (by ${timeStr})`;
+  }
+  return `in ${m}m (by ${timeStr})`;
+}
 
 // ── Trace types ───────────────────────────────────────────────────────────────
 
@@ -68,15 +109,16 @@ export function createCandelaTools(
 
   const costSummary = tool({
     description:
-      "Get a summary of LLM costs for the current session or time period. " +
+      "Get a summary of LLM costs for the current session, time period, or team. " +
       "Shows total spend, token usage, request count, and per-model breakdown. " +
+      "Use 'team' scope to see a team-wide usage leaderboard. " +
       "Use this when the user asks about costs, spending, usage, or tokens.",
     args: {
       scope: tool.schema
-        .enum(["session", "1h", "24h", "7d"])
+        .enum(["session", "1h", "24h", "7d", "team"])
         .default("24h")
         .describe(
-          "Time period to analyze. Use 'session' for the current coding session.",
+          "Time period to analyze. Use 'session' for current coding session, 'team' for team leaderboard.",
         ),
       model_filter: tool.schema
         .string()
@@ -86,6 +128,19 @@ export function createCandelaTools(
         ),
     },
     async execute(args) {
+      if (args.scope === "team") {
+        const users = await candela.getTeamLeaderboard(24);
+        if (!users || users.length === 0)
+          return "No team usage data available.";
+        const lines = ["## Team Usage (24h)", ""];
+        for (const u of users) {
+          lines.push(
+            `**${u.displayName || u.email || u.userId}**: ${formatCost(u.costUsd)} | ${u.callCount} calls | ${u.totalTokens.toLocaleString()} tokens | top model: ${u.topModel}`,
+          );
+        }
+        return lines.join("\n");
+      }
+
       if (args.scope === "session") {
         const session = getSession();
         if (!session.startTime) {
@@ -249,6 +304,21 @@ export function createCandelaTools(
           "",
           `**Budget**: ${formatCost(b.remainingUsd)} remaining of ${formatCost(b.limitUsd)} daily (${b.percentUsed.toFixed(0)}% used)`,
         );
+
+        if (b.percentUsed > 50 && hours > 0) {
+          const burnRate = usage.totalCostUsd / hours;
+          if (burnRate > 0) {
+            const hoursUntilExhaustion = b.remainingUsd / burnRate;
+            const forecast = formatForecastTime(hoursUntilExhaustion);
+            if (forecast.startsWith("Budget runway")) {
+              outLines.push(`**Forecast**: ${forecast}`);
+            } else {
+              outLines.push(
+                `**Forecast**: At current rate (${formatCost(burnRate)}/hr), budget exhausts ${forecast}`,
+              );
+            }
+          }
+        }
       }
 
       const totalCacheRead = models.reduce((s, m) => s + m.cacheReadTokens, 0);
@@ -286,6 +356,54 @@ export function createCandelaTools(
         }
         if (sorted.length > 15) {
           outLines.push(`| ... | +${sorted.length - 15} more models | | | | |`);
+        }
+
+        if (data.budget && data.budget.percentUsed > 50) {
+          try {
+            const catalog = await candela.getModelCatalog();
+            if (catalog && catalog.length > 0) {
+              const suggestions: string[] = [];
+              for (const m of sorted) {
+                const catalogModel = catalog.find((c) => c.modelId === m.model);
+                if (catalogModel?.category) {
+                  const sameCategory = catalog.filter(
+                    (c) =>
+                      c.category === catalogModel.category &&
+                      c.modelId !== m.model,
+                  );
+                  if (sameCategory.length > 0) {
+                    sameCategory.sort(
+                      (a, b) => a.inputPerMillion - b.inputPerMillion,
+                    );
+                    const cheapest = sameCategory[0];
+                    if (
+                      cheapest.inputPerMillion <
+                      catalogModel.inputPerMillion * 0.5
+                    ) {
+                      const savingsPercent = Math.round(
+                        (1 -
+                          cheapest.inputPerMillion /
+                            catalogModel.inputPerMillion) *
+                          100,
+                      );
+                      suggestions.push(
+                        `- **${m.model}**: Switch to **${cheapest.modelId}** for simple tasks → save ~${savingsPercent}% (${formatCost(catalogModel.inputPerMillion)} → ${formatCost(cheapest.inputPerMillion)})`,
+                      );
+                    }
+                  }
+                }
+              }
+              if (suggestions.length > 0) {
+                outLines.push(
+                  "",
+                  "### 💡 Savings Opportunity",
+                  ...suggestions.slice(0, 3),
+                );
+              }
+            }
+          } catch (_e) {
+            // Ignore catalog fetch errors
+          }
         }
       }
 
@@ -678,11 +796,240 @@ export function createCandelaTools(
     },
   });
 
+  // ── candela_annotate ────────────────────────────────────────────────────────
+
+  const annotate = tool({
+    description:
+      "Rate the quality of an LLM trace or attach a label. " +
+      "Use after completing a task to record whether the result was good or bad. " +
+      "You can provide an outcome (good/bad with optional 0-1 score) and/or a label.",
+    args: {
+      trace_id: tool.schema
+        .string()
+        .describe("Trace ID to annotate. Get from candela_traces."),
+      outcome: tool.schema
+        .enum(["good", "bad"])
+        .optional()
+        .describe("Overall quality rating"),
+      score: tool.schema
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe(
+          "Quality score 0.0-1.0 (optional, more precise than outcome)",
+        ),
+      label: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Category label: e.g. 'hallucination', 'clean-refactor', 'correct', 'partial'",
+        ),
+      comment: tool.schema
+        .string()
+        .optional()
+        .describe("Free-text explanation of the rating"),
+    },
+    async execute(args) {
+      const results: string[] = [];
+      if (args.outcome) {
+        const success = args.outcome === "good";
+        const ok = await candela.setOutcome(
+          args.trace_id,
+          success,
+          args.score,
+          args.comment,
+        );
+        results.push(
+          ok
+            ? `Outcome set: ${args.outcome}${args.score != null ? ` (score: ${args.score})` : ""}`
+            : "Failed to set outcome.",
+        );
+      }
+      if (args.label) {
+        const ok = await candela.addLabel(
+          args.trace_id,
+          args.label,
+          "opencode-agent",
+          args.comment,
+        );
+        results.push(
+          ok ? `Label added: ${args.label}` : "Failed to add label.",
+        );
+      }
+      if (results.length === 0) return "Provide at least an outcome or label.";
+      return results.join("\n");
+    },
+  });
+
+  // ── candela_memory ──────────────────────────────────────────────────────────
+
+  const memory = tool({
+    description:
+      "Read, write, or list persistent project notes that survive across sessions. " +
+      "Use this to store important discoveries, architecture decisions, or context " +
+      "that future sessions should know about. Notes are scoped to the current project/repository.",
+    args: {
+      action: tool.schema
+        .enum(["read", "write", "list", "delete"])
+        .describe(
+          "Action: read (get a note), write (save a note), list (all notes), delete (remove a note)",
+        ),
+      key: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Note key in kebab-case (required for read/write/delete). E.g. 'pagination-status', 'arch-decisions'",
+        ),
+      value: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Note content (required for write). Can be multi-line markdown.",
+        ),
+    },
+    async execute(args, ctx) {
+      const projectDir = ctx.directory;
+
+      switch (args.action) {
+        case "list": {
+          const entries = listEntries(projectDir);
+          if (entries.length === 0) return "No project notes stored yet.";
+          const lines = [`## Project Notes (${entries.length})`, ""];
+          for (const e of entries) {
+            const preview =
+              e.value.length > 80 ? `${e.value.slice(0, 80)}...` : e.value;
+            lines.push(`- **${e.key}** (updated ${e.updatedAt}): ${preview}`);
+          }
+          return lines.join("\n");
+        }
+        case "read": {
+          if (!args.key) return "Key is required for read.";
+          const entry = getEntry(projectDir, args.key);
+          if (!entry) return `No note found for key '${args.key}'.`;
+          return `## ${args.key}\n\n${entry.value}\n\n_Updated: ${entry.updatedAt}_`;
+        }
+        case "write": {
+          if (!args.key) return "Key is required for write.";
+          if (!args.value) return "Value is required for write.";
+          setEntry(projectDir, args.key, args.value);
+          return `Saved note '${args.key}'.`;
+        }
+        case "delete": {
+          if (!args.key) return "Key is required for delete.";
+          const deleted = deleteEntry(projectDir, args.key);
+          return deleted
+            ? `Deleted note '${args.key}'.`
+            : `No note found for key '${args.key}'.`;
+        }
+        default:
+          return "Unknown action.";
+      }
+    },
+  });
+
+  // ── candela_settings ────────────────────────────────────────────────────────
+
+  const settings = tool({
+    description:
+      "View or update Candela plugin settings. " +
+      "Use to enable/disable smart model routing, adjust budget thresholds, " +
+      "or check current configuration. " +
+      "Smart routing suggests cheaper models when budget is getting tight.",
+    args: {
+      action: tool.schema
+        .enum(["view", "enable-routing", "disable-routing", "set-threshold"])
+        .describe(
+          "Action: view (show current settings), enable-routing, disable-routing, " +
+            "set-threshold (set budget threshold for routing suggestions)",
+        ),
+      value: tool.schema
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe(
+          "Threshold value for set-threshold action (0.0-1.0). " +
+            "E.g., 0.7 means suggestions start at 70% budget usage.",
+        ),
+    },
+    async execute(args) {
+      const current = resolveSettings();
+
+      switch (args.action) {
+        case "view": {
+          const r = current.smartRouting;
+          const lines = [
+            "## Candela Settings",
+            "",
+            "### Smart Model Routing",
+            "",
+            `| Setting | Value |`,
+            `|---------|-------|`,
+            `| Enabled | ${r.enabled ? "✅ Yes" : "❌ No"} |`,
+            `| Budget Threshold | ${(r.budgetThreshold * 100).toFixed(0)}% |`,
+            `| Savings Threshold | ${(r.savingsThreshold * 100).toFixed(0)}% |`,
+            "",
+            `Settings file: \`${getSettingsPath()}\``,
+            "",
+            "**Environment overrides** (take priority):",
+            "- `CANDELA_SMART_ROUTING=true` — enable smart routing",
+            "- `CANDELA_ROUTING_THRESHOLD=0.7` — budget threshold (0.0–1.0)",
+            "- `CANDELA_ROUTING_SAVINGS_THRESHOLD=0.5` — min savings to suggest (0.0–1.0)",
+          ];
+          return {
+            title: `Settings: routing ${r.enabled ? "on" : "off"}, threshold ${(r.budgetThreshold * 100).toFixed(0)}%`,
+            output: lines.join("\n"),
+          };
+        }
+        case "enable-routing": {
+          const updated = updateSmartRouting({ enabled: true });
+          return {
+            title: "Smart routing enabled",
+            output:
+              "✅ Smart model routing is now **enabled**.\n\n" +
+              `When budget usage exceeds ${(updated.smartRouting.budgetThreshold * 100).toFixed(0)}%, ` +
+              "the AI will receive suggestions to use cheaper models for simple tasks.\n\n" +
+              "_Changes persist across sessions._",
+          };
+        }
+        case "disable-routing": {
+          updateSmartRouting({ enabled: false });
+          return {
+            title: "Smart routing disabled",
+            output:
+              "❌ Smart model routing is now **disabled**.\n\n" +
+              "The AI will no longer receive model routing suggestions.\n\n" +
+              "_Changes persist across sessions._",
+          };
+        }
+        case "set-threshold": {
+          if (args.value == null) {
+            return "Please provide a threshold value (0.0–1.0). E.g., 0.7 for 70%.";
+          }
+          const updated = updateSmartRouting({ budgetThreshold: args.value });
+          return {
+            title: `Threshold set to ${(args.value * 100).toFixed(0)}%`,
+            output:
+              `✅ Budget threshold set to **${(args.value * 100).toFixed(0)}%**.\n\n` +
+              `Smart routing suggestions will activate when budget usage exceeds ${(updated.smartRouting.budgetThreshold * 100).toFixed(0)}%.\n\n` +
+              "_Changes persist across sessions._",
+          };
+        }
+        default:
+          return "Unknown action.";
+      }
+    },
+  });
+
   return {
     candela_cost_summary: costSummary,
     candela_check_budget: checkBudget,
     candela_traces: listTraces,
     candela_browse_catalog: browseCatalog,
+    candela_annotate: annotate,
+    candela_memory: memory,
+    candela_settings: settings,
   };
 }
 

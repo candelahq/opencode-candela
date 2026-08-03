@@ -25,6 +25,7 @@ import { CandelaClient } from "./candela-client.js";
 import { createConfigTools } from "./config-tools.js";
 import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
+import { resolveSettings } from "./settings.js";
 import { createCandelaTools } from "./tools.js";
 import { formatCost, formatTokens } from "./utils.js";
 
@@ -131,7 +132,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     : undefined;
   const configTools = createConfigTools(candela, candelaUrl, client);
   // Phase 3: Context injection — cost awareness in system prompt
-  const context = alive ? createContextHook(candela) : undefined;
+  // Smart routing is opt-in: enable via CANDELA_SMART_ROUTING=true
+  const settings = resolveSettings();
+  const context = alive
+    ? createContextHook(candela, process.cwd(), settings.smartRouting)
+    : undefined;
   const tools = { ...configTools, ...costTools };
 
   return {
