@@ -155,16 +155,26 @@ export function readWeeklyDigest(): WeeklyDigest | null {
   }
   if (dailyCosts.size < 14) return null;
 
+  // Use UTC consistently — analytics entries store UTC ISO timestamps,
+  // so week boundaries must also be computed in UTC.
   const now = new Date();
-  const day = now.getDay();
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-  const thisWeekStart = new Date(now);
-  thisWeekStart.setDate(now.getDate() + diffToMonday);
-  thisWeekStart.setHours(0, 0, 0, 0);
+  const utcDay = now.getUTCDay();
+  const diffToMonday = utcDay === 0 ? -6 : 1 - utcDay;
+  const thisWeekStart = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + diffToMonday,
+    ),
+  );
   const thisWeekStartStr = thisWeekStart.toISOString().slice(0, 10);
 
+  const nextWeekStart = new Date(thisWeekStart);
+  nextWeekStart.setUTCDate(nextWeekStart.getUTCDate() + 7);
+  const nextWeekStartStr = nextWeekStart.toISOString().slice(0, 10);
+
   const lastWeekStart = new Date(thisWeekStart);
-  lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+  lastWeekStart.setUTCDate(lastWeekStart.getUTCDate() - 7);
   const lastWeekStartStr = lastWeekStart.toISOString().slice(0, 10);
 
   let thisWeekCost = 0;
@@ -174,7 +184,7 @@ export function readWeeklyDigest(): WeeklyDigest | null {
 
   for (const e of entries) {
     const tsStr = e.ts.slice(0, 10);
-    if (tsStr >= thisWeekStartStr) {
+    if (tsStr >= thisWeekStartStr && tsStr < nextWeekStartStr) {
       thisWeekCost += e.totalCost;
       thisWeekSessions++;
     } else if (tsStr >= lastWeekStartStr && tsStr < thisWeekStartStr) {
