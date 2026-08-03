@@ -8,6 +8,9 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
@@ -156,9 +159,21 @@ export const tui: TuiPlugin = async (api) => {
             ? [`🗄️ Cache hit rate: ${cacheHitRate.toFixed(0)}%`]
             : [];
 
-        return [budgetLine, costLine, ...cacheLine, ...modelLines].join(
-          "\n",
-        ) as unknown as null;
+        // Session activity
+        const activityLine =
+          sessionCalls > 0
+            ? [
+                `⚡ Session: ${formatCost(sessionCostUsd)} · ${sessionCalls} calls`,
+              ]
+            : [];
+
+        return [
+          budgetLine,
+          costLine,
+          ...cacheLine,
+          ...activityLine,
+          ...modelLines,
+        ].join("\n") as unknown as null;
       },
 
       // Sidebar footer — compact budget status
@@ -368,6 +383,49 @@ export const tui: TuiPlugin = async (api) => {
               variant: "warning",
             });
           }
+        },
+      },
+      {
+        title: "Candela: Export Session Data",
+        value: "candela.export",
+        description: "Export current session cost data as JSON",
+        category: "Candela",
+        slash: {
+          name: "export",
+          aliases: ["dump"],
+        },
+        onSelect: async () => {
+          await refresh(true);
+          const exportData = {
+            exportedAt: new Date().toISOString(),
+            period: "24h",
+            totalCost: totalCost24h,
+            sessionCost: sessionCostUsd,
+            sessionCalls,
+            budgetPct,
+            budgetRemaining,
+            cacheHitRate,
+            models: topModels,
+          };
+          // Write to ~/.config/opencode/candela-export.json
+          const exportPath = join(
+            homedir(),
+            ".config",
+            "opencode",
+            "candela-export.json",
+          );
+          const dir = dirname(exportPath);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(
+            exportPath,
+            JSON.stringify(exportData, null, 2),
+            "utf-8",
+          );
+          api.ui.toast({
+            title: "📦 Exported",
+            message: `Session data saved to ${exportPath}`,
+            variant: "info",
+          });
         },
       },
     ]);

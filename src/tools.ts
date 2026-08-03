@@ -153,13 +153,20 @@ export function createCandelaTools(
         if (entries.length === 0) {
           return "No Candela tool calls this session yet.";
         }
+        const maxCount = entries[0][1];
         const lines = [
-          `## Tool Usage (session: ${session.toolCalls} total calls)`,
+          `## 🔧 Tool Usage (session: ${session.toolCalls} total calls)`,
           "",
         ];
         for (const [name, count] of entries) {
-          const bar = "█".repeat(Math.min(count, 20));
-          lines.push(`- **${name}**: ${count} calls ${bar}`);
+          const barLen =
+            maxCount > 0 ? Math.max(1, Math.round((count / maxCount) * 20)) : 1;
+          const bar = "█".repeat(barLen);
+          const pct =
+            session.toolCalls > 0
+              ? ((count / session.toolCalls) * 100).toFixed(0)
+              : "0";
+          lines.push(`- **${name}**: ${count} calls (${pct}%) ${bar}`);
         }
         return lines.join("\n");
       }

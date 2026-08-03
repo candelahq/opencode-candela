@@ -3,6 +3,7 @@ import {
   getCumulativeCost,
   getSessionCount,
   readSpendTrends,
+  readWeeklyDigest,
 } from "../analytics-reader.js";
 
 // Mock node:fs to control the analytics file contents
@@ -262,6 +263,46 @@ describe("analytics-reader", () => {
         ["bad json", makeEntry("2026-08-01", 10.0)].join("\n"),
       );
       expect(getCumulativeCost()).toBe(10.0);
+    });
+  });
+
+  describe("readWeeklyDigest", () => {
+    it("returns null when file does not exist", () => {
+      mockExists.mockReturnValue(false);
+      expect(readWeeklyDigest()).toBeNull();
+    });
+
+    it("returns null when fewer than 14 days of data", () => {
+      mockExists.mockReturnValue(true);
+      // Generate 10 days of data (not enough)
+      const lines: string[] = [];
+      for (let i = 1; i <= 10; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        lines.push(makeEntry(d.toISOString().slice(0, 10), 5.0, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+      expect(readWeeklyDigest()).toBeNull();
+    });
+
+    it("computes weekly comparison with sufficient data", () => {
+      mockExists.mockReturnValue(true);
+      // Generate 21 days of data
+      const lines: string[] = [];
+      for (let i = 0; i < 21; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        // Vary cost to make weeks different
+        const cost = i < 7 ? 10.0 : i < 14 ? 5.0 : 2.0;
+        lines.push(makeEntry(d.toISOString().slice(0, 10), cost, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const digest = readWeeklyDigest();
+      expect(digest).not.toBeNull();
+      expect(digest?.thisWeekSessions).toBeGreaterThan(0);
+      expect(digest?.lastWeekSessions).toBeGreaterThan(0);
+      expect(typeof digest?.changePercent).toBe("number");
     });
   });
 });
