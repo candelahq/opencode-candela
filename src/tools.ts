@@ -35,7 +35,7 @@ import {
 
 function formatForecastTime(hoursUntilExhaustion: number): string {
   if (hoursUntilExhaustion <= 0) {
-    return "budget already exhausted";
+    return "Budget already exhausted";
   }
   if (hoursUntilExhaustion > 168) {
     return "Budget runway: > 7 days";
@@ -313,7 +313,10 @@ export function createCandelaTools(
           if (burnRate > 0) {
             const hoursUntilExhaustion = b.remainingUsd / burnRate;
             const forecast = formatForecastTime(hoursUntilExhaustion);
-            if (forecast.startsWith("Budget runway")) {
+            if (
+              forecast.startsWith("Budget runway") ||
+              forecast.startsWith("Budget already")
+            ) {
               outLines.push(`**Forecast**: ${forecast}`);
             } else {
               outLines.push(
@@ -1046,7 +1049,7 @@ export function createCandelaTools(
         .array(tool.schema.string())
         .optional()
         .describe(
-          "Specific model IDs to compare. If omitted, compares the top 5 cheapest plus the current model.",
+          "Specific model IDs to compare. If omitted, compares the top 8 cheapest enabled models.",
         ),
     },
     async execute(args) {
@@ -1059,8 +1062,9 @@ export function createCandelaTools(
       const outputM = args.output_tokens / 1_000_000;
 
       // Filter to requested models or top cheapest
-      let models = catalog.filter((m) => m.enabled && m.inputPerMillion > 0);
+      let models = catalog.filter((m) => m.enabled);
       if (args.models && args.models.length > 0) {
+        // Explicit requests bypass the price filter — user may want free-tier models
         const requested = new Set(args.models.map((m) => m.toLowerCase()));
         models = models.filter(
           (m) =>
@@ -1069,6 +1073,9 @@ export function createCandelaTools(
               m.modelId.toLowerCase().includes(r.toLowerCase()),
             ),
         );
+      } else {
+        // Default: only priced models for meaningful comparison
+        models = models.filter((m) => m.inputPerMillion > 0);
       }
 
       // Calculate costs and sort

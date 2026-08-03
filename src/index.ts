@@ -30,6 +30,17 @@ import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
 import { resolveSettings } from "./settings.js";
 import { createCandelaTools } from "./tools.js";
+
+/** Redact credentials/tokens from a URL, keeping only the origin. */
+function sanitizeUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return u.origin;
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
 import { formatCost, formatTokens } from "./utils.js";
 
 // ── Analytics ────────────────────────────────────────────────────────────────
@@ -100,7 +111,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     // Single call to get usage + budget + grants
     const data = await candela.getDashboardData(24);
 
-    const connectMsg = `Connected to Candela at ${candelaUrl}`;
+    const connectMsg = `Connected to Candela at ${sanitizeUrl(candelaUrl)}`;
     await client.app.log({
       body: {
         service: "opencode-candela",
@@ -142,7 +153,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         message:
           "🕯️ Candela can track your AI spend in real-time.\n" +
           `   Run \`candela start\` or set CANDELA_URL to connect.\n` +
-          `   Tried: ${candelaUrl}`,
+          `   Tried: ${sanitizeUrl(candelaUrl)}`,
       },
     });
   }
@@ -405,6 +416,9 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         }
 
         // ── Session analytics logging ──────────────────────────────────
+        // NOTE: cost/models are from the 24h dashboard aggregate, not
+        // session-scoped. This is a periodic snapshot for local trend
+        // analysis. Session baseline subtraction gives a rough estimate.
         if (sessionId && sessionStartTime) {
           const sessionCost = sessionBaseline
             ? Math.max(
