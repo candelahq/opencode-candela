@@ -23,6 +23,20 @@ interface AnalyticsEntry {
   totalCost: number;
 }
 
+/** Type guard: require string ts, non-empty string sessionId, finite cost. */
+function isValidEntry(parsed: unknown): parsed is AnalyticsEntry {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const p = parsed as Record<string, unknown>;
+  return (
+    typeof p.ts === "string" &&
+    p.ts.length > 0 &&
+    typeof p.sessionId === "string" &&
+    p.sessionId.length > 0 &&
+    typeof p.totalCost === "number" &&
+    Number.isFinite(p.totalCost)
+  );
+}
+
 export interface SpendTrend {
   /** Total spend from sessions that started yesterday (calendar day). */
   yesterdayCost: number;
@@ -51,7 +65,7 @@ export function readSpendTrends(): SpendTrend | null {
     for (const line of lines) {
       try {
         const parsed = JSON.parse(line);
-        if (parsed.ts && typeof parsed.totalCost === "number") {
+        if (isValidEntry(parsed)) {
           rawEntries.push(parsed);
         }
       } catch {
@@ -134,11 +148,7 @@ function parseUniqueEntries(): AnalyticsEntry[] {
     for (const line of raw.trim().split("\n").filter(Boolean)) {
       try {
         const parsed = JSON.parse(line);
-        if (
-          parsed.ts &&
-          parsed.sessionId &&
-          typeof parsed.totalCost === "number"
-        ) {
+        if (isValidEntry(parsed)) {
           const existing = bySession.get(parsed.sessionId);
           if (!existing || parsed.ts > existing.ts) {
             bySession.set(parsed.sessionId, parsed);

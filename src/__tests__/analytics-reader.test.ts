@@ -154,6 +154,45 @@ describe("analytics-reader", () => {
       expect(trends).not.toBeNull();
       expect(trends?.yesterdayCost).toBe(15.0);
     });
+
+    it("rejects entries with invalid shapes (numeric ts, missing sessionId, Infinity cost)", () => {
+      const now = new Date();
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+      const twoDaysAgo = new Date(now);
+      twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+      const twoDaysAgoStr = twoDaysAgo.toISOString().slice(0, 10);
+
+      mockExists.mockReturnValue(true);
+      mockRead.mockReturnValue(
+        [
+          // Invalid: numeric ts
+          JSON.stringify({ ts: 12345, sessionId: "bad-ts", totalCost: 5.0 }),
+          // Invalid: missing sessionId
+          JSON.stringify({
+            ts: `${yesterdayStr}T12:00:00.000Z`,
+            totalCost: 5.0,
+          }),
+          // Invalid: Infinity cost
+          JSON.stringify({
+            ts: `${yesterdayStr}T12:00:00.000Z`,
+            sessionId: "inf",
+            totalCost: Infinity,
+          }),
+          // Valid entries
+          makeEntry(twoDaysAgoStr, 10.0, "good-1"),
+          makeEntry(yesterdayStr, 20.0, "good-2"),
+        ].join("\n"),
+      );
+
+      const trends = readSpendTrends();
+      expect(trends).not.toBeNull();
+      // Only the 2 valid entries survive
+      expect(trends?.yesterdayCost).toBe(20.0);
+      expect(trends?.daysOfData).toBe(2);
+    });
   });
 
   describe("getSessionCount", () => {
