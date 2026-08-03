@@ -136,6 +136,75 @@ export function readSpendTrends(): SpendTrend | null {
   }
 }
 
+export interface WeeklyDigest {
+  thisWeekCost: number;
+  lastWeekCost: number;
+  changePercent: number; // positive = spending more
+  thisWeekSessions: number;
+  lastWeekSessions: number;
+}
+
+export function readWeeklyDigest(): WeeklyDigest | null {
+  const entries = parseUniqueEntries();
+  if (entries.length === 0) return null;
+
+  const dailyCosts = new Map<string, number>();
+  for (const e of entries) {
+    const day = e.ts.slice(0, 10);
+    dailyCosts.set(day, (dailyCosts.get(day) ?? 0) + e.totalCost);
+  }
+  if (dailyCosts.size < 14) return null;
+
+  // Use UTC consistently — analytics entries store UTC ISO timestamps,
+  // so week boundaries must also be computed in UTC.
+  const now = new Date();
+  const utcDay = now.getUTCDay();
+  const diffToMonday = utcDay === 0 ? -6 : 1 - utcDay;
+  const thisWeekStart = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + diffToMonday,
+    ),
+  );
+  const thisWeekStartStr = thisWeekStart.toISOString().slice(0, 10);
+
+  const nextWeekStart = new Date(thisWeekStart);
+  nextWeekStart.setUTCDate(nextWeekStart.getUTCDate() + 7);
+  const nextWeekStartStr = nextWeekStart.toISOString().slice(0, 10);
+
+  const lastWeekStart = new Date(thisWeekStart);
+  lastWeekStart.setUTCDate(lastWeekStart.getUTCDate() - 7);
+  const lastWeekStartStr = lastWeekStart.toISOString().slice(0, 10);
+
+  let thisWeekCost = 0;
+  let lastWeekCost = 0;
+  let thisWeekSessions = 0;
+  let lastWeekSessions = 0;
+
+  for (const e of entries) {
+    const tsStr = e.ts.slice(0, 10);
+    if (tsStr >= thisWeekStartStr && tsStr < nextWeekStartStr) {
+      thisWeekCost += e.totalCost;
+      thisWeekSessions++;
+    } else if (tsStr >= lastWeekStartStr && tsStr < thisWeekStartStr) {
+      lastWeekCost += e.totalCost;
+      lastWeekSessions++;
+    }
+  }
+
+  const changePercent =
+    lastWeekCost > 0 ? ((thisWeekCost - lastWeekCost) / lastWeekCost) * 100 : 0;
+
+  return {
+    thisWeekCost,
+    lastWeekCost,
+    changePercent,
+    thisWeekSessions,
+    lastWeekSessions,
+  };
+}
+
 /**
  * Parse the JSONL file and deduplicate by sessionId (keep latest per session).
  * Shared by getSessionCount and getCumulativeCost.

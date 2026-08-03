@@ -27,6 +27,7 @@ import {
   getCumulativeCost,
   getSessionCount,
   readSpendTrends,
+  readWeeklyDigest,
 } from "./analytics-reader.js";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
@@ -340,6 +341,30 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
                 `📈 Yesterday: ${formatCost(trends.yesterdayCost)} · ` +
                 `This week: ${formatCost(trends.weekCost)} · ` +
                 `Avg: ${formatCost(trends.avgDailyCost)}/day${budgetLine}`,
+            },
+          });
+        }
+
+        const digest = readWeeklyDigest();
+        if (digest) {
+          const arrow =
+            digest.changePercent > 0
+              ? "📈"
+              : digest.changePercent < 0
+                ? "📉"
+                : "➡️";
+          const pct = Math.abs(digest.changePercent).toFixed(0);
+          const direction =
+            digest.changePercent > 0
+              ? "up"
+              : digest.changePercent < 0
+                ? "down"
+                : "flat";
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "info",
+              message: `${arrow} This week: ${formatCost(digest.thisWeekCost)} (${digest.thisWeekSessions} sessions) vs last week: ${formatCost(digest.lastWeekCost)} — ${direction} ${pct}%`,
             },
           });
         }
