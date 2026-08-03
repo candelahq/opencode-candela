@@ -1022,6 +1022,104 @@ export function createCandelaTools(
     },
   });
 
+  // ── candela_compare_cost ────────────────────────────────────────────────────
+
+  const compareCost = tool({
+    description:
+      "Compare the estimated cost of a prompt across different models. " +
+      "Use when the user asks 'which model is cheapest for this?' or " +
+      "'how much would this cost with GPT vs Claude vs Gemini?'. " +
+      "Requires estimated token counts for the prompt.",
+    args: {
+      input_tokens: tool.schema
+        .number()
+        .describe("Estimated input token count for the prompt."),
+      output_tokens: tool.schema
+        .number()
+        .describe("Estimated output token count for the response."),
+      models: tool.schema
+        .array(tool.schema.string())
+        .optional()
+        .describe(
+          "Specific model IDs to compare. If omitted, compares the top 5 cheapest plus the current model.",
+        ),
+    },
+    async execute(args) {
+      const catalog = await candela.getModelCatalog();
+      if (!catalog || catalog.length === 0) {
+        return "Model catalog unavailable. Is Candela running?";
+      }
+
+      const inputM = args.input_tokens / 1_000_000;
+      const outputM = args.output_tokens / 1_000_000;
+
+      // Filter to requested models or top cheapest
+      let models = catalog.filter((m) => m.enabled && m.inputPerMillion > 0);
+      if (args.models && args.models.length > 0) {
+        const requested = new Set(args.models.map((m) => m.toLowerCase()));
+        models = models.filter(
+          (m) =>
+            requested.has(m.modelId.toLowerCase()) ||
+            [...requested].some((r) =>
+              m.modelId.toLowerCase().includes(r.toLowerCase()),
+            ),
+        );
+      }
+
+      // Calculate costs and sort
+      const results = models
+        .map((m) => {
+          const inputCost = m.inputPerMillion * inputM;
+          const outputCost = m.outputPerMillion * outputM;
+          return {
+            model: m.modelId,
+            inputCost,
+            outputCost,
+            totalCost: inputCost + outputCost,
+            provider: m.provider,
+          };
+        })
+        .sort((a, b) => a.totalCost - b.totalCost);
+
+      // Take top 8 if unfiltered
+      const display = args.models ? results : results.slice(0, 8);
+
+      if (display.length === 0) {
+        return "No matching models found in the catalog.";
+      }
+
+      const cheapest = display[0];
+      const most = display[display.length - 1];
+
+      const lines = [
+        `## Cost Comparison (${formatTokens(args.input_tokens)} in, ${formatTokens(args.output_tokens)} out)`,
+        "",
+        "| Model | Provider | Input | Output | **Total** |",
+        "|-------|----------|-------|--------|-----------|",
+        ...display.map(
+          (r) =>
+            `| ${r.model} | ${r.provider} | ${formatCost(r.inputCost)} | ${formatCost(r.outputCost)} | **${formatCost(r.totalCost)}** |`,
+        ),
+      ];
+
+      if (display.length > 1 && most.totalCost > 0) {
+        const savingsPct = Math.round(
+          ((most.totalCost - cheapest.totalCost) / most.totalCost) * 100,
+        );
+        lines.push(
+          "",
+          `💡 **Cheapest**: ${cheapest.model} at ${formatCost(cheapest.totalCost)}` +
+            ` (${savingsPct}% savings vs ${most.model} at ${formatCost(most.totalCost)})`,
+        );
+      }
+
+      return {
+        title: `Cost comparison: ${display.length} models`,
+        output: lines.join("\n"),
+      };
+    },
+  });
+
   return {
     candela_cost_summary: costSummary,
     candela_check_budget: checkBudget,
@@ -1030,6 +1128,7 @@ export function createCandelaTools(
     candela_annotate: annotate,
     candela_memory: memory,
     candela_settings: settings,
+    candela_compare_cost: compareCost,
   };
 }
 
