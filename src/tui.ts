@@ -7,6 +7,7 @@
  * - Session prompt right: Inline cost indicator next to the prompt
  */
 
+import { execFileSync } from "node:child_process";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
@@ -34,10 +35,16 @@ export const tui: TuiPlugin = async (api) => {
   let baselineCalls: number | null = null;
   let baselineCostUsd: number | null = null;
   let cacheHitRate: number | null = null;
+  /** Raw 0.0–1.0 fraction for accurate threshold math (avoids rounding error). */
+  let budgetFraction: number | null = null;
 
-  async function refresh() {
+  // Per-response cost tracking
+  let prevTotalCost: number | null = null;
+  let lastResponseCost: number | null = null;
+
+  async function refresh(force = false) {
     const now = Date.now();
-    if (now - lastRefresh < 15_000) return; // Debounce 15s
+    if (!force && now - lastRefresh < 15_000) return; // Debounce 15s
     lastRefresh = now;
 
     try {
@@ -47,6 +54,7 @@ export const tui: TuiPlugin = async (api) => {
       if (data.budget) {
         budgetPct = Math.round(data.budget.usedFraction * 100);
         budgetRemaining = data.budget.remainingUsd;
+        budgetFraction = data.budget.usedFraction;
         budgetEmoji =
           data.budget.usedFraction >= 0.9
             ? "🔴"
@@ -56,6 +64,7 @@ export const tui: TuiPlugin = async (api) => {
       } else {
         budgetPct = null;
         budgetRemaining = null;
+        budgetFraction = null;
         budgetEmoji = "🟢";
       }
 
@@ -109,6 +118,8 @@ export const tui: TuiPlugin = async (api) => {
 
   // Initial load
   await refresh();
+  // Seed per-response baseline so the first response has a delta
+  prevTotalCost = totalCost24h;
 
   // Background polling
   const interval = setInterval(refresh, 30_000);
@@ -163,6 +174,10 @@ export const tui: TuiPlugin = async (api) => {
         if (sessionCalls === 0 && budgetPct === null) return null;
 
         const parts: string[] = [];
+        // Show last response cost if available
+        if (lastResponseCost !== null && lastResponseCost > 0) {
+          parts.push(`↳${formatCost(lastResponseCost)}`);
+        }
         if (sessionCostUsd > 0) {
           parts.push(formatCost(sessionCostUsd));
         }
@@ -199,7 +214,32 @@ export const tui: TuiPlugin = async (api) => {
   let lastToastThreshold = 0;
 
   api.event.on("session.idle", async () => {
-    await refresh();
+    // Force refresh to get fresh data for per-response delta
+    await refresh(true);
+
+    // Per-response cost attribution
+    if (prevTotalCost !== null) {
+      lastResponseCost = Math.max(0, totalCost24h - prevTotalCost);
+
+      // Dynamic threshold: max($0.10, 1% of daily budget)
+      // Use raw budgetFraction to avoid rounding error from budgetPct
+      const dynamicThreshold =
+        budgetRemaining !== null &&
+        budgetFraction !== null &&
+        budgetFraction < 1
+          ? Math.max(0.1, (budgetRemaining / (1 - budgetFraction)) * 0.01)
+          : 0.1;
+
+      if (lastResponseCost >= dynamicThreshold) {
+        api.ui.toast({
+          title: "💸 Expensive Response",
+          message: `That response: ${formatCost(lastResponseCost)} · Session total: ${formatCost(sessionCostUsd)}`,
+          variant:
+            lastResponseCost >= dynamicThreshold * 3 ? "warning" : "info",
+        });
+      }
+    }
+    prevTotalCost = totalCost24h;
 
     const threshold =
       budgetPct != null && budgetPct >= 100
@@ -300,6 +340,34 @@ export const tui: TuiPlugin = async (api) => {
             message: lines,
             variant: "info",
           });
+        },
+      },
+      {
+        title: "Candela: Open Dashboard",
+        value: "candela.dashboard",
+        description: "Open the Candela web dashboard in your browser",
+        category: "Candela",
+        slash: {
+          name: "dashboard",
+          aliases: ["dash"],
+        },
+        onSelect: () => {
+          // Derive dashboard URL from discovered Candela URL
+          const dashboardUrl = `${candelaUrl.replace(/\/$/, "")}/_local/`;
+          try {
+            execFileSync("open", [dashboardUrl]);
+            api.ui.toast({
+              title: "📊 Dashboard",
+              message: `Opening ${dashboardUrl} in your browser...`,
+              variant: "info",
+            });
+          } catch {
+            api.ui.toast({
+              title: "📊 Dashboard",
+              message: `Could not open browser. Visit ${dashboardUrl}`,
+              variant: "warning",
+            });
+          }
         },
       },
     ]);

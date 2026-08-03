@@ -39,6 +39,8 @@ export interface SmartRoutingSettings {
 
 export interface PluginSettings {
   smartRouting: SmartRoutingSettings;
+  /** Number of cross-promotion impressions already shown. */
+  crossPromoShown: number;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -49,6 +51,7 @@ const DEFAULTS: PluginSettings = {
     budgetThreshold: 0.7,
     savingsThreshold: 0.5,
   },
+  crossPromoShown: 0,
 };
 
 // ── Persisted settings file ───────────────────────────────────────────────────
@@ -63,6 +66,7 @@ const SETTINGS_PATH = join(
 interface PersistedSettings {
   version: 1;
   smartRouting?: Partial<SmartRoutingSettings>;
+  crossPromoShown?: number;
 }
 
 function readPersisted(): PersistedSettings {
@@ -125,6 +129,7 @@ export function resolveSettings(): PluginSettings {
         persisted.smartRouting?.savingsThreshold ??
         DEFAULTS.smartRouting.savingsThreshold,
     },
+    crossPromoShown: persisted.crossPromoShown ?? DEFAULTS.crossPromoShown,
   };
 }
 
@@ -166,4 +171,15 @@ export function updateSmartRouting(
  */
 export function getSettingsPath(): string {
   return SETTINGS_PATH;
+}
+
+/**
+ * Record a cross-promotion impression. Persists so we cap at MAX_IMPRESSIONS
+ * across restarts.
+ */
+export function incrementCrossPromo(): number {
+  const persisted = readPersisted();
+  persisted.crossPromoShown = (persisted.crossPromoShown ?? 0) + 1;
+  writePersisted(persisted);
+  return persisted.crossPromoShown;
 }

@@ -23,12 +23,17 @@ import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
+import {
+  getCumulativeCost,
+  getSessionCount,
+  readSpendTrends,
+} from "./analytics-reader.js";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
 import { createConfigTools } from "./config-tools.js";
 import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
-import { resolveSettings } from "./settings.js";
+import { incrementCrossPromo, resolveSettings } from "./settings.js";
 import { createCandelaTools } from "./tools.js";
 
 /** Redact credentials/tokens from a URL, keeping only the origin. */
@@ -280,8 +285,10 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
         // Capture baseline metrics at session start for accurate delta.
         // Awaited to prevent race where session.idle fires before baseline is set.
+        let baselineData: Awaited<ReturnType<typeof candela.getDashboardData>> =
+          null;
         try {
-          const baselineData = await candela.getDashboardData(24);
+          baselineData = await candela.getDashboardData(24);
           if (baselineData) {
             sessionBaseline = {
               cost: baselineData.usage.totalCostUsd,
@@ -313,6 +320,68 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
                 "   Smart routing: set CANDELA_SMART_ROUTING=true",
             },
           });
+        }
+
+        // ── Startup trend summary ──────────────────────────────────────
+        const trends = readSpendTrends();
+        if (trends) {
+          const budgetLine = baselineData?.budget
+            ? ` · Budget: ${formatCost(baselineData.budget.remainingUsd)} remaining`
+            : "";
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "info",
+              message:
+                `📈 Yesterday: ${formatCost(trends.yesterdayCost)} · ` +
+                `This week: ${formatCost(trends.weekCost)} · ` +
+                `Avg: ${formatCost(trends.avgDailyCost)}/day${budgetLine}`,
+            },
+          });
+        }
+
+        // ── Cross-promote ecosystem (milestone triggers, max 3) ────────
+        const MAX_PROMO_IMPRESSIONS = 3;
+        const settings = resolveSettings();
+        if (settings.crossPromoShown < MAX_PROMO_IMPRESSIONS) {
+          const totalSessions = getSessionCount();
+          const totalSpend = getCumulativeCost();
+          const hitBudgetWarning = baselineData?.budget?.usedFraction
+            ? baselineData.budget.usedFraction >= 0.8
+            : false;
+
+          // Milestone triggers: 5th session, $50 cumulative, or first budget warning
+          const shouldPromote =
+            totalSessions >= 5 || totalSpend >= 50 || hitBudgetWarning;
+
+          if (shouldPromote) {
+            // Check if Desktop is reachable
+            let desktopAlive = false;
+            try {
+              const resp = await fetch(
+                "http://localhost:8181/_local/api/health",
+                { signal: AbortSignal.timeout(1000) },
+              );
+              desktopAlive = resp.ok;
+            } catch {
+              // Desktop not running
+            }
+
+            const promoMsg = desktopAlive
+              ? "📊 Candela Dashboard available: http://localhost:8181/_local/\n" +
+                "   Charts, model breakdown, budget waterfalls, and more."
+              : "💡 Get the Candela Desktop app for charts and budget waterfalls:\n" +
+                "   brew install --cask candelahq/tap/candela-desktop";
+
+            await client.app.log({
+              body: {
+                service: "opencode-candela",
+                level: "info",
+                message: promoMsg,
+              },
+            });
+            incrementCrossPromo();
+          }
         }
       }
 
