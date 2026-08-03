@@ -92,6 +92,18 @@ export interface CatalogEntry {
   tierThresholdTokens: number;
 }
 
+/** A team member's usage summary for the leaderboard. */
+export interface UserUsage {
+  userId: string;
+  email: string;
+  displayName: string;
+  callCount: number;
+  totalTokens: number;
+  costUsd: number;
+  avgLatencyMs: number;
+  topModel: string;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Compute a human-readable reset countdown from a future Date. */
@@ -362,6 +374,126 @@ export class CandelaClient {
         }));
     } catch {
       return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Get team usage leaderboard for the last N hours.
+   * Returns null if Candela is offline or the endpoint is unavailable.
+   */
+  async getTeamLeaderboard(
+    hours = 24,
+    limit = 20,
+  ): Promise<UserUsage[] | null> {
+    if (!(await this.isAlive())) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/candela.v1.DashboardService/GetTeamLeaderboard`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...makeTimeRange(hours), limit }),
+          signal: controller.signal,
+        },
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      const users: unknown[] = data.users ?? [];
+      return users
+        .filter(
+          (u): u is Record<string, unknown> =>
+            u != null && typeof u === "object",
+        )
+        .map((u) => ({
+          userId: String(u.userId ?? u.user_id ?? ""),
+          email: String(u.email ?? ""),
+          displayName: String(u.displayName ?? u.display_name ?? ""),
+          callCount: Number(u.callCount ?? u.call_count ?? 0),
+          totalTokens: Number(u.totalTokens ?? u.total_tokens ?? 0),
+          costUsd: Number(u.costUsd ?? u.cost_usd ?? 0),
+          avgLatencyMs: Number(u.avgLatencyMs ?? u.avg_latency_ms ?? 0),
+          topModel: String(u.topModel ?? u.top_model ?? ""),
+        }));
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Set outcome (good/bad) on a trace for annotation.
+   * Returns true on success.
+   */
+  async setOutcome(
+    traceId: string,
+    success: boolean,
+    score?: number,
+    comment?: string,
+  ): Promise<boolean> {
+    if (!(await this.isAlive())) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const body: Record<string, unknown> = {
+        trace_id: traceId,
+        success,
+      };
+      if (score != null) body.score = score;
+      if (comment) body.comment = comment;
+      const res = await fetch(
+        `${this.baseUrl}/candela.v1.AnnotationService/SetOutcome`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        },
+      );
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Add a label to a trace for annotation.
+   * Returns true on success.
+   */
+  async addLabel(
+    traceId: string,
+    label: string,
+    reviewer = "opencode-agent",
+    comment?: string,
+  ): Promise<boolean> {
+    if (!(await this.isAlive())) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const body: Record<string, unknown> = {
+        trace_id: traceId,
+        label,
+        reviewer,
+      };
+      if (comment) body.comment = comment;
+      const res = await fetch(
+        `${this.baseUrl}/candela.v1.AnnotationService/AddLabel`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        },
+      );
+      return res.ok;
+    } catch {
+      return false;
     } finally {
       clearTimeout(timeout);
     }

@@ -176,6 +176,21 @@ export const tui: TuiPlugin = async (api) => {
         if (parts.length === 0) return null;
         return parts.join(" · ") as unknown as null;
       },
+
+      // Status bar — persistent cost ticker at the bottom
+      status_bar: () => {
+        refresh();
+        const parts: string[] = [];
+        parts.push(`🕯️ ${formatCost(totalCost24h)} 24h`);
+        if (budgetPct !== null) {
+          parts.push(`${budgetEmoji}${budgetPct}%`);
+        }
+        parts.push(`${sessionCalls} calls`);
+        if (cacheHitRate !== null) {
+          parts.push(`🗄️${cacheHitRate.toFixed(0)}%`);
+        }
+        return parts.join(" · ") as unknown as null;
+      },
     },
   });
 
@@ -213,4 +228,80 @@ export const tui: TuiPlugin = async (api) => {
       });
     }
   });
+
+  // ── Slash Commands ──────────────────────────────────────────────────────────
+
+  if (api.command) {
+    api.command.register(() => [
+      {
+        title: "Candela: Cost Summary",
+        value: "candela.cost",
+        description: "Show current session and daily cost breakdown",
+        category: "Candela",
+        slash: {
+          name: "cost",
+          aliases: ["spend"],
+        },
+        onSelect: async () => {
+          await refresh();
+          // Inject a user message that triggers the cost summary tool
+          api.ui.toast({
+            title: "💰 Cost Summary",
+            message: `Today: ${formatCost(totalCost24h)} · Session: ${formatCost(sessionCostUsd)} (${sessionCalls} calls)`,
+            variant: "info",
+          });
+        },
+      },
+      {
+        title: "Candela: Budget Status",
+        value: "candela.budget",
+        description: "Show budget remaining, grants, and forecast",
+        category: "Candela",
+        slash: {
+          name: "budget",
+          aliases: ["remaining"],
+        },
+        onSelect: async () => {
+          await refresh();
+          const msg =
+            budgetPct !== null && budgetRemaining !== null
+              ? `${budgetEmoji} ${budgetPct}% used · ${formatCost(budgetRemaining)} remaining`
+              : "Budget data unavailable. Is Candela running?";
+          api.ui.toast({
+            title: "📊 Budget",
+            message: msg,
+            variant: budgetPct !== null && budgetPct >= 90 ? "warning" : "info",
+          });
+        },
+      },
+      {
+        title: "Candela: Top Models by Usage",
+        value: "candela.models",
+        description: "Show top models by usage over the last 24h",
+        category: "Candela",
+        slash: {
+          name: "models",
+        },
+        onSelect: async () => {
+          await refresh();
+          if (topModels.length === 0) {
+            api.ui.toast({
+              title: "📋 Models",
+              message: "No model usage data yet.",
+              variant: "info",
+            });
+            return;
+          }
+          const lines = topModels
+            .map((m) => `${m.model}: ${formatCost(m.cost)} (${m.calls})`)
+            .join("\n");
+          api.ui.toast({
+            title: "📋 Top Models (24h)",
+            message: lines,
+            variant: "info",
+          });
+        },
+      },
+    ]);
+  }
 };

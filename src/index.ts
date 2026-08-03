@@ -19,14 +19,64 @@
 // Re-export TUI plugin for OpenCode to discover
 export { tui } from "./tui.js";
 
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 import type { GrantInfo } from "./candela-client.js";
 import { CandelaClient } from "./candela-client.js";
 import { createConfigTools } from "./config-tools.js";
 import { createContextHook } from "./context.js";
 import { discoverCandelaUrl } from "./discover.js";
+import { resolveSettings } from "./settings.js";
 import { createCandelaTools } from "./tools.js";
+
+/** Redact credentials/tokens from a URL, keeping only the origin. */
+function sanitizeUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return u.origin;
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
 import { formatCost, formatTokens } from "./utils.js";
+
+// ── Analytics ────────────────────────────────────────────────────────────────
+
+const ANALYTICS_PATH = join(
+  homedir(),
+  ".config",
+  "opencode",
+  "candela-analytics.jsonl",
+);
+
+interface SessionAnalyticsEntry {
+  ts: string;
+  sessionId: string;
+  duration: number;
+  toolCalls: number;
+  totalCost: number;
+  pluginVersion: string;
+  models: string[];
+}
+
+/** Append a session analytics entry to the local JSONL file. */
+function logSessionAnalytics(entry: SessionAnalyticsEntry): void {
+  try {
+    const dir = dirname(ANALYTICS_PATH);
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(ANALYTICS_PATH, `${JSON.stringify(entry)}\n`, "utf-8");
+  } catch {
+    // Non-fatal — analytics is best-effort
+  }
+}
+
+/** Check if this is the very first session (no analytics file yet). */
+function isFirstEverSession(): boolean {
+  return !existsSync(ANALYTICS_PATH);
+}
 
 /** Budget urgency emoji based on usage fraction. */
 function budgetEmoji(fraction: number): string {
@@ -61,7 +111,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     // Single call to get usage + budget + grants
     const data = await candela.getDashboardData(24);
 
-    const connectMsg = `Connected to Candela at ${candelaUrl}`;
+    const connectMsg = `Connected to Candela at ${sanitizeUrl(candelaUrl)}`;
     await client.app.log({
       body: {
         service: "opencode-candela",
@@ -95,11 +145,15 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       });
     }
   } else {
+    // ── First-use onboarding: Candela not running ───────────────────────
     await client.app.log({
       body: {
         service: "opencode-candela",
-        level: "debug",
-        message: `Candela not detected at ${candelaUrl} — plugin will no-op`,
+        level: "info",
+        message:
+          "🕯️ Candela can track your AI spend in real-time.\n" +
+          `   Run \`candela start\` or set CANDELA_URL to connect.\n` +
+          `   Tried: ${sanitizeUrl(candelaUrl)}`,
       },
     });
   }
@@ -131,7 +185,14 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     : undefined;
   const configTools = createConfigTools(candela, candelaUrl, client);
   // Phase 3: Context injection — cost awareness in system prompt
-  const context = alive ? createContextHook(candela) : undefined;
+  // Smart routing is opt-in: enable via CANDELA_SMART_ROUTING=true
+  const context = alive
+    ? createContextHook(
+        candela,
+        process.cwd(),
+        () => resolveSettings().smartRouting,
+      )
+    : undefined;
   const tools = { ...configTools, ...costTools };
 
   return {
@@ -239,6 +300,20 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             message: `📍 Session ${sessionId.slice(0, 8)} started`,
           },
         });
+
+        // ── First-use onboarding: Candela is running ────────────────────
+        if (isFirstEverSession()) {
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "info",
+              message:
+                "🕯️ Candela is tracking costs for this session.\n" +
+                '   Try: "how much have I spent?" or /cost\n' +
+                "   Smart routing: set CANDELA_SMART_ROUTING=true",
+            },
+          });
+        }
       }
 
       // Show cost + budget summary when session goes idle
@@ -338,6 +413,36 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               });
             }
           }
+        }
+
+        // ── Session analytics logging ──────────────────────────────────
+        // NOTE: cost/models are from the 24h dashboard aggregate, not
+        // session-scoped. This is a periodic snapshot for local trend
+        // analysis. Session baseline subtraction gives a rough estimate.
+        if (sessionId && sessionStartTime) {
+          const sessionCost = sessionBaseline
+            ? Math.max(
+                (data?.usage.totalCostUsd ?? 0) - sessionBaseline.cost,
+                0,
+              )
+            : (data?.usage.totalCostUsd ?? 0);
+          const sessionDuration = Math.round(
+            (Date.now() - sessionStartTime.getTime()) / 1000,
+          );
+          const modelsUsed =
+            data?.models
+              .filter((m) => m.requestCount > 0)
+              .map((m) => m.model) ?? [];
+
+          logSessionAnalytics({
+            ts: new Date().toISOString(),
+            sessionId,
+            duration: sessionDuration,
+            toolCalls: sessionToolCalls,
+            totalCost: sessionCost,
+            pluginVersion: "0.6.0",
+            models: modelsUsed,
+          });
         }
       }
     },

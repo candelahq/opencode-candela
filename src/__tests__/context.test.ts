@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CandelaClient } from "../candela-client.js";
 import { createContextHook } from "../context.js";
 
+vi.mock("../memory-store.js", () => ({ listEntries: () => [] }));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeDashboardData(overrides: {
@@ -92,13 +94,13 @@ describe("createContextHook", () => {
     it("fetches data on first call", async () => {
       const data = makeDashboardData({ budget: { usedFraction: 0.45 } });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
 
       expect(client.getDashboardData).toHaveBeenCalledTimes(1);
-      expect(output.system).toHaveLength(1);
+      expect(output.system).toHaveLength(2);
       expect(output.system[0]).toContain("[Candela]");
     });
 
@@ -109,7 +111,7 @@ describe("createContextHook", () => {
         totalCostUsd: 1.5,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       // First call
       await hook(makeInput(), makeOutput());
@@ -129,7 +131,7 @@ describe("createContextHook", () => {
         totalCostUsd: 1.5,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       await hook(makeInput(), makeOutput());
       expect(client.getDashboardData).toHaveBeenCalledTimes(1);
@@ -150,7 +152,7 @@ describe("createContextHook", () => {
         totalCostUsd: 5,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
@@ -163,7 +165,7 @@ describe("createContextHook", () => {
         totalCostUsd: 4,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
@@ -176,7 +178,7 @@ describe("createContextHook", () => {
         totalCostUsd: 2,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
@@ -191,7 +193,7 @@ describe("createContextHook", () => {
         totalCostUsd: 4,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
@@ -208,7 +210,7 @@ describe("createContextHook", () => {
         totalCostUsd: 1,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput("claude-haiku-4.5", "candela"), output);
@@ -221,7 +223,7 @@ describe("createContextHook", () => {
         totalCostUsd: 1,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput("claude-sonnet-4", "candela"), output);
@@ -231,7 +233,7 @@ describe("createContextHook", () => {
     it("matches cheap models case-insensitively", async () => {
       const data = makeDashboardData({ budget: null, totalCostUsd: 1 });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput("GPT-4.1-Nano", "openai"), output);
@@ -244,7 +246,7 @@ describe("createContextHook", () => {
   describe("graceful error handling", () => {
     it("injects nothing when API returns null on first call", async () => {
       const client = makeMockClient(null);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
@@ -258,12 +260,12 @@ describe("createContextHook", () => {
         totalCostUsd: 2,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       // Succeed first
       const output1 = makeOutput();
       await hook(makeInput(), output1);
-      expect(output1.system).toHaveLength(1);
+      expect(output1.system).toHaveLength(2);
 
       // Now make API throw and advance past TTL
       vi.advanceTimersByTime(61_000);
@@ -287,7 +289,7 @@ describe("createContextHook", () => {
             makeDashboardData({ budget: null, totalCostUsd: 1 }),
           ),
       } as unknown as CandelaClient;
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       // First call — fails
       const out1 = makeOutput();
@@ -298,7 +300,7 @@ describe("createContextHook", () => {
       const out2 = makeOutput();
       await hook(makeInput(), out2);
       expect(client.getDashboardData).toHaveBeenCalledTimes(2);
-      expect(out2.system).toHaveLength(1);
+      expect(out2.system).toHaveLength(2);
     });
   });
 
@@ -308,23 +310,23 @@ describe("createContextHook", () => {
     it("handles missing model gracefully", async () => {
       const data = makeDashboardData({ budget: null, totalCostUsd: 1 });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       // Pass input with no model property
       await hook({} as Parameters<typeof hook>[0], output);
-      expect(output.system).toHaveLength(1);
+      expect(output.system).toHaveLength(2);
       expect(output.system[0]).toContain("[Candela]");
     });
 
     it("handles null model.id gracefully", async () => {
       const data = makeDashboardData({ budget: null, totalCostUsd: 1 });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook({ model: {} } as Parameters<typeof hook>[0], output);
-      expect(output.system).toHaveLength(1);
+      expect(output.system).toHaveLength(2);
     });
   });
 
@@ -334,7 +336,7 @@ describe("createContextHook", () => {
     it('uses "Last 24h spend" not "Today\'s spend"', async () => {
       const data = makeDashboardData({ budget: null, totalCostUsd: 3.2 });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
@@ -352,11 +354,11 @@ describe("createContextHook", () => {
         totalCostUsd: 1,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook({ sessionID: "s1", ...makeInput() }, output);
-      expect(output.system).toHaveLength(1);
+      expect(output.system).toHaveLength(2);
     });
 
     it("suppresses injection on second call when budget < 80%", async () => {
@@ -365,7 +367,7 @@ describe("createContextHook", () => {
         totalCostUsd: 1,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       // First call — injects
       await hook({ sessionID: "s1", ...makeInput() }, makeOutput());
@@ -382,7 +384,7 @@ describe("createContextHook", () => {
         totalCostUsd: 5,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       await hook({ sessionID: "s1", ...makeInput() }, makeOutput());
       const output2 = makeOutput();
@@ -400,12 +402,12 @@ describe("createContextHook", () => {
         totalCostUsd: 1,
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       // Session A first call — injects
       const outA = makeOutput();
       await hook({ sessionID: "session-a", ...makeInput() }, outA);
-      expect(outA.system).toHaveLength(1);
+      expect(outA.system).toHaveLength(2);
 
       // Session A second call — throttled
       const outA2 = makeOutput();
@@ -415,7 +417,7 @@ describe("createContextHook", () => {
       // Session B first call — injects (different session)
       const outB = makeOutput();
       await hook({ sessionID: "session-b", ...makeInput() }, outB);
-      expect(outB.system).toHaveLength(1);
+      expect(outB.system).toHaveLength(2);
     });
 
     it("resetSession clears all session tracking", async () => {
@@ -424,7 +426,7 @@ describe("createContextHook", () => {
         totalCostUsd: 1,
       });
       const client = makeMockClient(data);
-      const { hook, resetSession } = createContextHook(client);
+      const { hook, resetSession } = createContextHook(client, "/tmp");
 
       // First call — injects
       await hook({ sessionID: "s1", ...makeInput() }, makeOutput());
@@ -437,7 +439,7 @@ describe("createContextHook", () => {
       resetSession();
       const out3 = makeOutput();
       await hook({ sessionID: "s1", ...makeInput() }, out3);
-      expect(out3.system).toHaveLength(1);
+      expect(out3.system).toHaveLength(2);
     });
   });
 
@@ -461,7 +463,7 @@ describe("createContextHook", () => {
         ],
       });
       const client = makeMockClient(data);
-      const { hook } = createContextHook(client);
+      const { hook } = createContextHook(client, "/tmp");
 
       const output = makeOutput();
       await hook(makeInput(), output);
