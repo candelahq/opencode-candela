@@ -7,6 +7,7 @@
  * - Session prompt right: Inline cost indicator next to the prompt
  */
 
+import { execSync } from "node:child_process";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
@@ -34,6 +35,10 @@ export const tui: TuiPlugin = async (api) => {
   let baselineCalls: number | null = null;
   let baselineCostUsd: number | null = null;
   let cacheHitRate: number | null = null;
+
+  // Per-response cost tracking
+  let prevTotalCost: number | null = null;
+  let lastResponseCost: number | null = null;
 
   async function refresh() {
     const now = Date.now();
@@ -163,6 +168,10 @@ export const tui: TuiPlugin = async (api) => {
         if (sessionCalls === 0 && budgetPct === null) return null;
 
         const parts: string[] = [];
+        // Show last response cost if available
+        if (lastResponseCost !== null && lastResponseCost > 0) {
+          parts.push(`↳${formatCost(lastResponseCost)}`);
+        }
         if (sessionCostUsd > 0) {
           parts.push(formatCost(sessionCostUsd));
         }
@@ -199,7 +208,30 @@ export const tui: TuiPlugin = async (api) => {
   let lastToastThreshold = 0;
 
   api.event.on("session.idle", async () => {
+    // Snapshot cost before refresh so we can compute per-response delta
+    const _costBefore = totalCost24h;
     await refresh();
+
+    // Per-response cost attribution
+    if (prevTotalCost !== null) {
+      lastResponseCost = Math.max(0, totalCost24h - prevTotalCost);
+
+      // Dynamic threshold: max($0.10, 1% of daily budget)
+      const dynamicThreshold =
+        budgetRemaining !== null && budgetPct !== null && budgetPct < 100
+          ? Math.max(0.1, (budgetRemaining / (1 - budgetPct / 100)) * 0.01)
+          : 0.1;
+
+      if (lastResponseCost >= dynamicThreshold) {
+        api.ui.toast({
+          title: "💸 Expensive Response",
+          message: `That response: ${formatCost(lastResponseCost)} · Session total: ${formatCost(sessionCostUsd)}`,
+          variant:
+            lastResponseCost >= dynamicThreshold * 3 ? "warning" : "info",
+        });
+      }
+    }
+    prevTotalCost = totalCost24h;
 
     const threshold =
       budgetPct != null && budgetPct >= 100
@@ -300,6 +332,33 @@ export const tui: TuiPlugin = async (api) => {
             message: lines,
             variant: "info",
           });
+        },
+      },
+      {
+        title: "Candela: Open Dashboard",
+        value: "candela.dashboard",
+        description: "Open the Candela web dashboard in your browser",
+        category: "Candela",
+        slash: {
+          name: "dashboard",
+          aliases: ["dash"],
+        },
+        onSelect: () => {
+          try {
+            execSync("open http://localhost:8181/_local/");
+            api.ui.toast({
+              title: "📊 Dashboard",
+              message: "Opening Candela dashboard in your browser...",
+              variant: "info",
+            });
+          } catch {
+            api.ui.toast({
+              title: "📊 Dashboard",
+              message:
+                "Could not open browser. Visit http://localhost:8181/_local/",
+              variant: "warning",
+            });
+          }
         },
       },
     ]);
