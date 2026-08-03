@@ -35,13 +35,11 @@ export const tui: TuiPlugin = async (api) => {
   let lastRefresh = 0;
   let sessionCalls = 0;
   let sessionCostUsd = 0;
-  let baselineCalls: number | null = null;
-  let baselineCostUsd: number | null = null;
   let cacheHitRate: number | null = null;
   /** Raw 0.0–1.0 fraction for accurate threshold math (avoids rounding error). */
   let budgetFraction: number | null = null;
 
-  // Per-response cost tracking
+  // Per-response cost/call delta tracking — accumulated on each session.idle
   let prevTotalCost: number | null = null;
   let lastResponseCost: number | null = null;
 
@@ -72,23 +70,6 @@ export const tui: TuiPlugin = async (api) => {
       }
 
       totalCost24h = data.usage.totalCostUsd ?? 0;
-
-      // Capture baseline on first refresh so we show session-only deltas,
-      // not the rolling 24h totals.
-      if (baselineCalls === null) {
-        baselineCalls = data.usage.requestCount ?? 0;
-      }
-      if (baselineCostUsd === null) {
-        baselineCostUsd = data.usage.totalCostUsd ?? 0;
-      }
-      sessionCalls = Math.max(
-        0,
-        (data.usage.requestCount ?? 0) - baselineCalls,
-      );
-      sessionCostUsd = Math.max(
-        0,
-        (data.usage.totalCostUsd ?? 0) - baselineCostUsd,
-      );
 
       if (data.models) {
         topModels = data.models
@@ -121,7 +102,7 @@ export const tui: TuiPlugin = async (api) => {
 
   // Initial load
   await refresh();
-  // Seed per-response baseline so the first response has a delta
+  // Seed delta tracking baseline so first response has a delta
   prevTotalCost = totalCost24h;
 
   // Background polling
@@ -232,9 +213,12 @@ export const tui: TuiPlugin = async (api) => {
     // Force refresh to get fresh data for per-response delta
     await refresh(true);
 
-    // Per-response cost attribution
+    // Accumulate per-response deltas instead of subtracting a baseline.
+    // This avoids undercounting when older entries age out of the 24h window.
     if (prevTotalCost !== null) {
       lastResponseCost = Math.max(0, totalCost24h - prevTotalCost);
+      sessionCostUsd += lastResponseCost;
+      sessionCalls++;
 
       // Dynamic threshold: max($0.10, 1% of daily budget)
       // Use raw budgetFraction to avoid rounding error from budgetPct
