@@ -47,19 +47,30 @@ export function readSpendTrends(): SpendTrend | null {
     if (lines.length === 0) return null;
 
     // Parse entries, skipping malformed lines
-    const entries: AnalyticsEntry[] = [];
+    const rawEntries: AnalyticsEntry[] = [];
     for (const line of lines) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.ts && typeof parsed.totalCost === "number") {
-          entries.push(parsed);
+          rawEntries.push(parsed);
         }
       } catch {
         // Skip malformed lines
       }
     }
 
-    if (entries.length === 0) return null;
+    if (rawEntries.length === 0) return null;
+
+    // Deduplicate: session.idle writes multiple snapshots per session.
+    // Keep only the latest entry per sessionId.
+    const bySession = new Map<string, AnalyticsEntry>();
+    for (const e of rawEntries) {
+      const existing = bySession.get(e.sessionId);
+      if (!existing || e.ts > existing.ts) {
+        bySession.set(e.sessionId, e);
+      }
+    }
+    const entries = [...bySession.values()];
 
     // Group costs by calendar day (YYYY-MM-DD)
     const dailyCosts = new Map<string, number>();
@@ -111,35 +122,44 @@ export function readSpendTrends(): SpendTrend | null {
   }
 }
 
-/** Count total sessions recorded in analytics. */
-export function getSessionCount(): number {
-  if (!existsSync(ANALYTICS_PATH)) return 0;
+/**
+ * Parse the JSONL file and deduplicate by sessionId (keep latest per session).
+ * Shared by getSessionCount and getCumulativeCost.
+ */
+function parseUniqueEntries(): AnalyticsEntry[] {
+  if (!existsSync(ANALYTICS_PATH)) return [];
   try {
     const raw = readFileSync(ANALYTICS_PATH, "utf-8");
-    return raw.trim().split("\n").filter(Boolean).length;
-  } catch {
-    return 0;
-  }
-}
-
-/** Sum total cost across all recorded sessions. */
-export function getCumulativeCost(): number {
-  if (!existsSync(ANALYTICS_PATH)) return 0;
-  try {
-    const raw = readFileSync(ANALYTICS_PATH, "utf-8");
-    let total = 0;
+    const bySession = new Map<string, AnalyticsEntry>();
     for (const line of raw.trim().split("\n").filter(Boolean)) {
       try {
         const parsed = JSON.parse(line);
-        if (typeof parsed.totalCost === "number") {
-          total += parsed.totalCost;
+        if (
+          parsed.ts &&
+          parsed.sessionId &&
+          typeof parsed.totalCost === "number"
+        ) {
+          const existing = bySession.get(parsed.sessionId);
+          if (!existing || parsed.ts > existing.ts) {
+            bySession.set(parsed.sessionId, parsed);
+          }
         }
       } catch {
         // skip
       }
     }
-    return total;
+    return [...bySession.values()];
   } catch {
-    return 0;
+    return [];
   }
+}
+
+/** Count unique sessions recorded in analytics. */
+export function getSessionCount(): number {
+  return parseUniqueEntries().length;
+}
+
+/** Sum total cost across unique sessions. */
+export function getCumulativeCost(): number {
+  return parseUniqueEntries().reduce((sum, e) => sum + e.totalCost, 0);
 }

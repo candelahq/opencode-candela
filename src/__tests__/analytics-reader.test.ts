@@ -25,10 +25,18 @@ import { existsSync, readFileSync } from "node:fs";
 const mockExists = vi.mocked(existsSync);
 const mockRead = vi.mocked(readFileSync);
 
-function makeEntry(date: string, cost: number, sessionId = "sess-1"): string {
+let entryCounter = 0;
+function makeEntry(
+  date: string,
+  cost: number,
+  sessionId?: string,
+  hour = 12,
+): string {
+  entryCounter++;
+  const hh = String(hour).padStart(2, "0");
   return JSON.stringify({
-    ts: `${date}T12:00:00.000Z`,
-    sessionId,
+    ts: `${date}T${hh}:00:00.000Z`,
+    sessionId: sessionId ?? `sess-${entryCounter}`,
     totalCost: cost,
     duration: 300,
     toolCalls: 5,
@@ -40,6 +48,7 @@ function makeEntry(date: string, cost: number, sessionId = "sess-1"): string {
 describe("analytics-reader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    entryCounter = 0;
   });
 
   describe("readSpendTrends", () => {
@@ -84,10 +93,41 @@ describe("analytics-reader", () => {
 
       const trends = readSpendTrends();
       expect(trends).not.toBeNull();
+      // Each entry has a unique sessionId, so all 4 count
       expect(trends?.yesterdayCost).toBe(25.0); // 20 + 5
       expect(trends?.daysOfData).toBe(3);
       // Avg excludes today: (10 + 25) / 2 = 17.5
       expect(trends?.avgDailyCost).toBe(17.5);
+    });
+
+    it("deduplicates multiple idle snapshots for the same session", () => {
+      const now = new Date();
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+      const twoDaysAgo = new Date(now);
+      twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+      const twoDaysAgoStr = twoDaysAgo.toISOString().slice(0, 10);
+
+      mockExists.mockReturnValue(true);
+      // dup-session written 3 times with increasing timestamps (idle snapshots)
+      // third-session on twoDaysAgo ensures we have 2+ days for trends
+      mockRead.mockReturnValue(
+        [
+          makeEntry(twoDaysAgoStr, 3.0, "third-session"),
+          makeEntry(yesterdayStr, 8.0, "dup-session", 10),
+          makeEntry(yesterdayStr, 12.0, "dup-session", 11),
+          makeEntry(yesterdayStr, 15.0, "dup-session", 14),
+          makeEntry(yesterdayStr, 7.0, "other-session"),
+        ].join("\n"),
+      );
+
+      const trends = readSpendTrends();
+      expect(trends).not.toBeNull();
+      // 3 unique sessions: third(3.0 twoDaysAgo), dup(15.0 yesterday), other(7.0 yesterday)
+      // yesterday = 15.0 + 7.0 = 22.0
+      expect(trends?.yesterdayCost).toBe(22.0);
     });
 
     it("handles malformed lines gracefully", () => {
@@ -122,12 +162,27 @@ describe("analytics-reader", () => {
       expect(getSessionCount()).toBe(0);
     });
 
-    it("counts lines in the analytics file", () => {
+    it("counts unique sessions in the analytics file", () => {
       mockExists.mockReturnValue(true);
       mockRead.mockReturnValue(
-        [makeEntry("2026-08-01", 5), makeEntry("2026-08-02", 10)].join("\n"),
+        [
+          makeEntry("2026-08-01", 5, "s1"),
+          makeEntry("2026-08-02", 10, "s2"),
+        ].join("\n"),
       );
       expect(getSessionCount()).toBe(2);
+    });
+
+    it("deduplicates repeated idle writes for same session", () => {
+      mockExists.mockReturnValue(true);
+      mockRead.mockReturnValue(
+        [
+          makeEntry("2026-08-01", 5, "same-id"),
+          makeEntry("2026-08-01", 8, "same-id"),
+          makeEntry("2026-08-02", 10, "other-id"),
+        ].join("\n"),
+      );
+      expect(getSessionCount()).toBe(2); // not 3
     });
   });
 
@@ -137,16 +192,29 @@ describe("analytics-reader", () => {
       expect(getCumulativeCost()).toBe(0);
     });
 
-    it("sums totalCost across all entries", () => {
+    it("sums totalCost across unique sessions", () => {
       mockExists.mockReturnValue(true);
       mockRead.mockReturnValue(
         [
-          makeEntry("2026-08-01", 5.5),
-          makeEntry("2026-08-02", 12.3),
-          makeEntry("2026-08-03", 7.2),
+          makeEntry("2026-08-01", 5.5, "s1"),
+          makeEntry("2026-08-02", 12.3, "s2"),
+          makeEntry("2026-08-03", 7.2, "s3"),
         ].join("\n"),
       );
       expect(getCumulativeCost()).toBe(25.0);
+    });
+
+    it("uses latest entry per session for cost", () => {
+      mockExists.mockReturnValue(true);
+      mockRead.mockReturnValue(
+        [
+          makeEntry("2026-08-01", 5.0, "s1", 10),
+          makeEntry("2026-08-01", 12.0, "s1", 14), // later timestamp wins
+          makeEntry("2026-08-02", 3.0, "s2"),
+        ].join("\n"),
+      );
+      // s1: latest = 12.0, s2: 3.0 → total = 15.0
+      expect(getCumulativeCost()).toBe(15.0);
     });
 
     it("skips malformed entries", () => {

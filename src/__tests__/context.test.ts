@@ -100,7 +100,7 @@ describe("createContextHook", () => {
       await hook(makeInput(), output);
 
       expect(client.getDashboardData).toHaveBeenCalledTimes(1);
-      expect(output.system).toHaveLength(2);
+      expect(output.system).toHaveLength(1);
       expect(output.system[0]).toContain("[Candela]");
     });
 
@@ -265,7 +265,7 @@ describe("createContextHook", () => {
       // Succeed first
       const output1 = makeOutput();
       await hook(makeInput(), output1);
-      expect(output1.system).toHaveLength(2);
+      expect(output1.system).toHaveLength(1);
 
       // Now make API throw and advance past TTL
       vi.advanceTimersByTime(61_000);
@@ -300,7 +300,7 @@ describe("createContextHook", () => {
       const out2 = makeOutput();
       await hook(makeInput(), out2);
       expect(client.getDashboardData).toHaveBeenCalledTimes(2);
-      expect(out2.system).toHaveLength(2);
+      expect(out2.system).toHaveLength(1);
     });
   });
 
@@ -315,7 +315,7 @@ describe("createContextHook", () => {
       const output = makeOutput();
       // Pass input with no model property
       await hook({} as Parameters<typeof hook>[0], output);
-      expect(output.system).toHaveLength(2);
+      expect(output.system).toHaveLength(1);
       expect(output.system[0]).toContain("[Candela]");
     });
 
@@ -326,7 +326,7 @@ describe("createContextHook", () => {
 
       const output = makeOutput();
       await hook({ model: {} } as Parameters<typeof hook>[0], output);
-      expect(output.system).toHaveLength(2);
+      expect(output.system).toHaveLength(1);
     });
   });
 
@@ -358,7 +358,7 @@ describe("createContextHook", () => {
 
       const output = makeOutput();
       await hook({ sessionID: "s1", ...makeInput() }, output);
-      expect(output.system).toHaveLength(2);
+      expect(output.system).toHaveLength(1);
     });
 
     it("suppresses injection on second call when budget < 80%", async () => {
@@ -407,7 +407,7 @@ describe("createContextHook", () => {
       // Session A first call — injects
       const outA = makeOutput();
       await hook({ sessionID: "session-a", ...makeInput() }, outA);
-      expect(outA.system).toHaveLength(2);
+      expect(outA.system).toHaveLength(1);
 
       // Session A second call — throttled
       const outA2 = makeOutput();
@@ -417,7 +417,7 @@ describe("createContextHook", () => {
       // Session B first call — injects (different session)
       const outB = makeOutput();
       await hook({ sessionID: "session-b", ...makeInput() }, outB);
-      expect(outB.system).toHaveLength(2);
+      expect(outB.system).toHaveLength(1);
     });
 
     it("resetSession clears all session tracking", async () => {
@@ -439,7 +439,7 @@ describe("createContextHook", () => {
       resetSession();
       const out3 = makeOutput();
       await hook({ sessionID: "s1", ...makeInput() }, out3);
-      expect(out3.system).toHaveLength(2);
+      expect(out3.system).toHaveLength(1);
     });
   });
 

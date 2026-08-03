@@ -285,18 +285,20 @@ export function createContextHook(
 
     output.system.push(`${cachedContext} ${modelContext.join(" ")}`.trimEnd());
 
-    // On first call of a session, include memory note keys + annotation reminder
+    // On first call of a session, include memory note keys (capped at 10)
     if (isFirstCall) {
       const entries = listEntries(projectDir);
       if (entries.length > 0) {
-        const keys = entries.map((e) => e.key).join(", ");
+        const recent = entries
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          .slice(0, 10);
+        const keys = recent.map((e) => e.key).join(", ");
+        const suffix =
+          entries.length > 10 ? ` (+${entries.length - 10} more)` : "";
         output.system.push(
-          `\u{1F4DD} Project notes (${entries.length}): ${keys}. Use candela_memory to read.`,
+          `\u{1F4DD} Project notes (${entries.length}): ${keys}${suffix}. Use candela_memory to read.`,
         );
       }
-      output.system.push(
-        "After completing a task, use candela_annotate to rate the trace quality.",
-      );
     }
   };
 
