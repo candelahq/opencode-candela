@@ -14,7 +14,13 @@ import { join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
-import { resolveSettings, updateDailyCostGoal } from "./settings.js";
+import {
+  resolveSettings,
+  toggleQuietMode,
+  updateDailyCostGoal,
+  updateSessionCostCap,
+  updateSessionTag,
+} from "./settings.js";
 
 import { formatCost } from "./utils.js";
 
@@ -155,6 +161,24 @@ export const tui: TuiPlugin = async (api) => {
               ]
             : [];
 
+        // Session tag
+        const tagLine: string[] = [];
+        const currentTag = resolveSettings().sessionTag;
+        if (currentTag) {
+          tagLine.push(`🏷️ ${currentTag}`);
+        }
+
+        // Cost forecast — extrapolate session cost over estimated remaining time
+        const forecastLine: string[] = [];
+        if (sessionCalls >= 3 && sessionCostUsd > 0) {
+          // Estimate cost/call, project for 10 more calls (reasonable session)
+          const costPerCall = sessionCostUsd / sessionCalls;
+          const projected = sessionCostUsd + costPerCall * 10;
+          forecastLine.push(
+            `📈 Forecast: ~${formatCost(projected)} if 10 more calls`,
+          );
+        }
+
         // Budget pacing — estimate when budget will run out
         const pacingLine: string[] = [];
         if (
@@ -210,7 +234,9 @@ export const tui: TuiPlugin = async (api) => {
           budgetLine,
           costLine,
           ...cacheLine,
+          ...tagLine,
           ...activityLine,
+          ...forecastLine,
           ...contextLine,
           ...goalLine,
           ...pacingLine,
@@ -300,11 +326,37 @@ export const tui: TuiPlugin = async (api) => {
           : 0.1;
 
       if (lastResponseCost >= dynamicThreshold) {
+        const settings = resolveSettings();
+        // In quiet mode, only show as warning (skip info-level cost toasts)
+        if (!settings.quietMode || lastResponseCost >= dynamicThreshold * 3) {
+          api.ui.toast({
+            title: "💸 Expensive Response",
+            message: `That response: ${formatCost(lastResponseCost)} · Session total: ${formatCost(sessionCostUsd)}`,
+            variant:
+              lastResponseCost >= dynamicThreshold * 3 ? "warning" : "info",
+          });
+        }
+      }
+
+      // Session cost cap warning
+      const capSettings = resolveSettings();
+      if (
+        capSettings.sessionCostCap !== null &&
+        sessionCostUsd >= capSettings.sessionCostCap
+      ) {
         api.ui.toast({
-          title: "💸 Expensive Response",
-          message: `That response: ${formatCost(lastResponseCost)} · Session total: ${formatCost(sessionCostUsd)}`,
-          variant:
-            lastResponseCost >= dynamicThreshold * 3 ? "warning" : "info",
+          title: "🛑 Session Cost Cap Reached",
+          message: `Session cost (${formatCost(sessionCostUsd)}) has reached your cap of ${formatCost(capSettings.sessionCostCap)}.\nConsider wrapping up or adjusting with CANDELA_SESSION_CAP.`,
+          variant: "error",
+        });
+      } else if (
+        capSettings.sessionCostCap !== null &&
+        sessionCostUsd >= capSettings.sessionCostCap * 0.8
+      ) {
+        api.ui.toast({
+          title: "⚠️ Approaching Session Cap",
+          message: `Session cost: ${formatCost(sessionCostUsd)} / ${formatCost(capSettings.sessionCostCap)} cap`,
+          variant: "warning",
         });
       }
     }
@@ -325,6 +377,7 @@ export const tui: TuiPlugin = async (api) => {
 
     if (threshold > 0 && threshold > lastToastThreshold) {
       lastToastThreshold = threshold;
+      // Budget warnings always show (even in quiet mode)
       const variant: "info" | "warning" | "error" =
         threshold >= 100 ? "error" : threshold >= 90 ? "warning" : "info";
       api.ui.toast({
@@ -518,6 +571,99 @@ export const tui: TuiPlugin = async (api) => {
             api.ui.toast({
               title: "🎯 Goal Set",
               message: `Daily goal set to ${formatCost(suggestedGoal)}\nBased on current usage: ${formatCost(totalCost24h)}\n\nChange with CANDELA_DAILY_GOAL env var`,
+              variant: "info",
+            });
+          }
+        },
+      },
+      {
+        title: "Candela: Toggle Quiet Mode",
+        value: "candela.quiet",
+        description: "Suppress info toasts — only show warnings and errors",
+        category: "Candela",
+        slash: {
+          name: "quiet",
+          aliases: ["shh"],
+        },
+        onSelect: () => {
+          const updated = toggleQuietMode();
+          api.ui.toast({
+            title: updated.quietMode ? "🔇 Quiet Mode On" : "🔔 Quiet Mode Off",
+            message: updated.quietMode
+              ? "Only warnings and errors will show as toasts."
+              : "All notifications restored.",
+            variant: "info",
+          });
+        },
+      },
+      {
+        title: "Candela: Tag Session",
+        value: "candela.tag",
+        description:
+          "Tag this session for cost attribution (e.g. 'refactoring')",
+        category: "Candela",
+        slash: {
+          name: "tag",
+          aliases: ["label"],
+        },
+        onSelect: () => {
+          const current = resolveSettings().sessionTag;
+          if (current) {
+            // Clear existing tag
+            updateSessionTag(null);
+            api.ui.toast({
+              title: "🏷️ Tag Cleared",
+              message: `Removed tag "${current}"`,
+              variant: "info",
+            });
+          } else {
+            // Can't prompt in TUI — set a default tag based on git branch
+            let branchTag = "untagged";
+            try {
+              branchTag =
+                execFileSync("git", ["branch", "--show-current"], {
+                  encoding: "utf-8",
+                  timeout: 2000,
+                }).trim() || "untagged";
+            } catch {
+              // git not available
+            }
+            updateSessionTag(branchTag);
+            api.ui.toast({
+              title: "🏷️ Tagged",
+              message: `Session tagged: "${branchTag}"\nChange with CANDELA_SESSION_TAG env var\nRun /tag again to clear`,
+              variant: "info",
+            });
+          }
+        },
+      },
+      {
+        title: "Candela: Set Session Cost Cap",
+        value: "candela.cap",
+        description:
+          "Set a per-session cost limit (warns at 80%, alerts at 100%)",
+        category: "Candela",
+        slash: {
+          name: "cap",
+        },
+        onSelect: () => {
+          const current = resolveSettings().sessionCostCap;
+          if (current !== null) {
+            api.ui.toast({
+              title: "🛑 Session Cap",
+              message: `Current cap: ${formatCost(current)}\nSession cost: ${formatCost(sessionCostUsd)}\n\nChange with CANDELA_SESSION_CAP=<amount>\nSet to 0 to clear`,
+              variant: "info",
+            });
+          } else {
+            // Auto-set based on current session cost
+            const suggestedCap = Math.max(
+              10,
+              Math.ceil(sessionCostUsd * 3) || 10,
+            );
+            updateSessionCostCap(suggestedCap);
+            api.ui.toast({
+              title: "🛑 Cap Set",
+              message: `Session cost cap set to ${formatCost(suggestedCap)}\nWarns at 80%, alerts at 100%\n\nChange with CANDELA_SESSION_CAP env var`,
               variant: "info",
             });
           }

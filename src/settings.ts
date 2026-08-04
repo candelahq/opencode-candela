@@ -43,6 +43,12 @@ export interface PluginSettings {
   crossPromoShown: number;
   /** Daily cost goal in USD. Null means no goal set. */
   dailyCostGoal: number | null;
+  /** Suppress info-level toasts. Only warnings/errors shown. */
+  quietMode: boolean;
+  /** Per-session cost cap in USD. Null means no cap. */
+  sessionCostCap: number | null;
+  /** Current session tag for cost attribution. Null means untagged. */
+  sessionTag: string | null;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -55,6 +61,9 @@ const DEFAULTS: PluginSettings = {
   },
   crossPromoShown: 0,
   dailyCostGoal: null,
+  quietMode: false,
+  sessionCostCap: null,
+  sessionTag: null,
 };
 
 // ── Persisted settings file ───────────────────────────────────────────────────
@@ -71,6 +80,9 @@ interface PersistedSettings {
   smartRouting?: Partial<SmartRoutingSettings>;
   crossPromoShown?: number;
   dailyCostGoal?: number | null;
+  quietMode?: boolean;
+  sessionCostCap?: number | null;
+  sessionTag?: string | null;
 }
 
 function readPersisted(): PersistedSettings {
@@ -138,6 +150,13 @@ export function resolveSettings(): PluginSettings {
       envFloat("CANDELA_DAILY_GOAL", 0, 10000) ??
       persisted.dailyCostGoal ??
       DEFAULTS.dailyCostGoal,
+    quietMode:
+      envBool("CANDELA_QUIET") ?? persisted.quietMode ?? DEFAULTS.quietMode,
+    sessionCostCap:
+      envFloat("CANDELA_SESSION_CAP", 0, 10000) ??
+      persisted.sessionCostCap ??
+      DEFAULTS.sessionCostCap,
+    sessionTag: persisted.sessionTag ?? DEFAULTS.sessionTag,
   };
 }
 
@@ -199,6 +218,30 @@ export function incrementCrossPromo(): number {
 export function updateDailyCostGoal(goal: number | null): PluginSettings {
   const persisted = readPersisted();
   persisted.dailyCostGoal = goal !== null ? Math.max(0, goal) : null;
+  writePersisted(persisted);
+  return resolveSettings();
+}
+
+/** Toggle quiet mode (suppress info toasts). */
+export function toggleQuietMode(): PluginSettings {
+  const persisted = readPersisted();
+  persisted.quietMode = !(persisted.quietMode ?? false);
+  writePersisted(persisted);
+  return resolveSettings();
+}
+
+/** Set or clear the per-session cost cap. */
+export function updateSessionCostCap(cap: number | null): PluginSettings {
+  const persisted = readPersisted();
+  persisted.sessionCostCap = cap !== null ? Math.max(0, cap) : null;
+  writePersisted(persisted);
+  return resolveSettings();
+}
+
+/** Set or clear the session tag for cost attribution. */
+export function updateSessionTag(tag: string | null): PluginSettings {
+  const persisted = readPersisted();
+  persisted.sessionTag = tag?.trim() || null;
   writePersisted(persisted);
   return resolveSettings();
 }
