@@ -27,6 +27,7 @@ import {
   detectCostAnomaly,
   getCumulativeCost,
   getSessionCount,
+  pruneAnalytics,
   readCostStreaks,
   readSpendTrends,
   readWeeklyDigest,
@@ -273,6 +274,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           activeSubtaskParent = null;
           activeSubtaskTitle = null;
         }
+      }
+
+      // Prune old analytics entries (once per process, regardless of Candela)
+      if (event.type === "session.created") {
+        pruneAnalytics();
       }
 
       if (!alive) return;
