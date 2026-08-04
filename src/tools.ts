@@ -188,9 +188,7 @@ export function createCandelaTools(
         const lines = ["## 📊 Model Efficiency (24h)", ""];
         for (const m of models) {
           const costPerCall = m.totalCostUsd / m.requestCount;
-          const tokensPerCall = Math.round(
-            m.totalTokens / m.requestCount,
-          );
+          const tokensPerCall = Math.round(m.totalTokens / m.requestCount);
           const cacheRate =
             m.totalTokens > 0
               ? Math.round((m.cacheReadTokens / m.totalTokens) * 100)
