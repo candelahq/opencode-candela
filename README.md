@@ -58,14 +58,14 @@ Zero-config when running Candela locally. All settings support environment varia
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `CANDELA_URL` | String | `http://localhost:8181` | Candela proxy URL |
+| `CANDELA_PROXY_URL` | String | `http://localhost:8181` | Candela proxy URL |
+| `CANDELA_CONFIG` | String | — | Path to Candela config YAML (for port discovery) |
 | `CANDELA_SMART_ROUTING` | Boolean | `false` | Enable cost-conscious model routing |
 | `CANDELA_ROUTING_THRESHOLD` | Float (0–1) | `0.7` | Budget fraction to trigger routing |
 | `CANDELA_ROUTING_SAVINGS_THRESHOLD` | Float (0–1) | `0.5` | Min savings to suggest model swap |
 | `CANDELA_DAILY_GOAL` | Number (USD) | — | Daily spending target |
 | `CANDELA_QUIET` | Boolean | `false` | Suppress info-level toasts |
-| `CANDELA_SESSION_CAP` | Number (USD) | — | Per-session cost limit |
-| `CANDELA_SESSION_TAG` | String | — | Session tag for cost attribution |
+| `CANDELA_SESSION_CAP` | Number (USD) | — | Per-session cost alert threshold |
 
 ### Settings File
 
