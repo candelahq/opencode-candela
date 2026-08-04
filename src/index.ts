@@ -503,10 +503,14 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
           const summary = parts.join(" · ");
 
-          try {
-            await $`osascript -e ${`display notification "${summary}" with title "Candela" subtitle "Session Summary"`}`;
-          } catch {
-            // Non-macOS or notification permission denied — log instead
+          if (process.platform === "darwin") {
+            try {
+              const safeSummary = summary.replace(/"/g, '\\"');
+              await $`osascript -e ${`display notification "${safeSummary}" with title "Candela" subtitle "Session Summary"`}`;
+            } catch {
+              // Notification permission denied — fall through to log
+            }
+          } else {
             await client.app.log({
               body: {
                 service: "opencode-candela",
@@ -521,9 +525,14 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         if (data?.budget && data.budget.percentUsed > 90) {
           const b = data.budget;
           const budgetMsg = `${formatCost(b.remainingUsd)} remaining (${b.percentUsed.toFixed(0)}% used)${b.resetLabel ? ` — ${b.resetLabel}` : ""}`;
-          try {
-            await $`osascript -e ${`display notification "${budgetMsg}" with title "Candela" subtitle "⚠️ Budget Warning"`}`;
-          } catch {
+          if (process.platform === "darwin") {
+            try {
+              const safeBudgetMsg = budgetMsg.replace(/"/g, '\\"');
+              await $`osascript -e ${`display notification "${safeBudgetMsg}" with title "Candela" subtitle "⚠️ Budget Warning"`}`;
+            } catch {
+              // Notification permission denied — fall through to log
+            }
+          } else {
             await client.app.log({
               body: {
                 service: "opencode-candela",

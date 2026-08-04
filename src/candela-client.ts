@@ -220,6 +220,19 @@ function parseModels(raw: unknown[]): ModelUsage[] {
     }));
 }
 
+/** Parse raw proto3 JSON usage summary into UsageSummary. */
+function parseUsageSummary(s: Record<string, unknown>): UsageSummary {
+  return {
+    totalTokens:
+      Number(s.totalInputTokens ?? s.total_input_tokens ?? 0) +
+      Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
+    inputTokens: Number(s.totalInputTokens ?? s.total_input_tokens ?? 0),
+    outputTokens: Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
+    totalCostUsd: Number(s.totalCostUsd ?? s.total_cost_usd ?? 0),
+    requestCount: Number(s.totalLlmCalls ?? s.total_llm_calls ?? 0),
+  };
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 export class CandelaClient {
@@ -310,6 +323,7 @@ export class CandelaClient {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(makeTimeRange(hours)),
+          signal: AbortSignal.timeout(5000),
         },
       );
       if (!res.ok) return null;
@@ -514,6 +528,7 @@ export class CandelaClient {
             ...makeTimeRange(hours),
             include_budget: true,
           }),
+          signal: AbortSignal.timeout(5000),
         },
       );
       // 404 / 501 = backend hasn't upgraded → trigger fallback
@@ -523,16 +538,7 @@ export class CandelaClient {
       const data = await res.json();
 
       // Parse summary
-      const s = data.summary ?? {};
-      const usage: UsageSummary = {
-        totalTokens:
-          Number(s.totalInputTokens ?? s.total_input_tokens ?? 0) +
-          Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
-        inputTokens: Number(s.totalInputTokens ?? s.total_input_tokens ?? 0),
-        outputTokens: Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
-        totalCostUsd: Number(s.totalCostUsd ?? s.total_cost_usd ?? 0),
-        requestCount: Number(s.totalLlmCalls ?? s.total_llm_calls ?? 0),
-      };
+      const usage = parseUsageSummary(data.summary ?? {});
 
       // Parse models
       const models = parseModels(data.models ?? []);
@@ -572,11 +578,13 @@ export class CandelaClient {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(timeRange),
+          signal: AbortSignal.timeout(5000),
         }).catch(() => null),
         fetch(`${this.baseUrl}/candela.v1.UserService/GetMyBudget`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
+          signal: AbortSignal.timeout(5000),
         }).catch(() => null),
       ]);
 
@@ -590,17 +598,7 @@ export class CandelaClient {
       };
       if (summaryRes?.ok) {
         const s = await summaryRes.json();
-        usage = {
-          totalTokens:
-            Number(s.totalInputTokens ?? s.total_input_tokens ?? 0) +
-            Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
-          inputTokens: Number(s.totalInputTokens ?? s.total_input_tokens ?? 0),
-          outputTokens: Number(
-            s.totalOutputTokens ?? s.total_output_tokens ?? 0,
-          ),
-          totalCostUsd: Number(s.totalCostUsd ?? s.total_cost_usd ?? 0),
-          requestCount: Number(s.totalLlmCalls ?? s.total_llm_calls ?? 0),
-        };
+        usage = parseUsageSummary(s);
       }
 
       // Parse budget (from UserService/GetMyBudget — the correct path)

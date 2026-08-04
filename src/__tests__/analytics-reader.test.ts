@@ -22,6 +22,7 @@ vi.mock("node:fs", async (importOriginal) => {
     readFileSync: vi.fn(),
     statSync: vi.fn(() => ({ size: 1024 })),
     writeFileSync: vi.fn(),
+    renameSync: vi.fn(),
   };
 });
 

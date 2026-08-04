@@ -164,6 +164,9 @@ export function createContextHook(
 
     // Refresh cache if stale
     if (!cachedContext || now - lastFetch > CACHE_TTL) {
+      // Set lastFetch before await to prevent thundering herd —
+      // concurrent callers will use stale cache while we refresh.
+      lastFetch = now;
       try {
         const data = await candela.getDashboardData(24);
         if (data) {
@@ -205,7 +208,6 @@ export function createContextHook(
           }
 
           cachedContext = parts.join(" ");
-          lastFetch = now;
         }
       } catch {
         // Non-fatal — keep using stale cache if we have it
