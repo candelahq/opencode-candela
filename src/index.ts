@@ -70,6 +70,7 @@ interface SessionAnalyticsEntry {
   totalCost: number;
   pluginVersion: string;
   models: string[];
+  tag?: string;
 }
 
 /** Append a session analytics entry to the local JSONL file. */
@@ -574,6 +575,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             });
           }
 
+          const sessionTag = resolveSettings().sessionTag;
           logSessionAnalytics({
             ts: new Date().toISOString(),
             sessionId,
@@ -583,6 +585,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             totalCost: sessionCost,
             pluginVersion: "0.5.0",
             models: modelsUsed,
+            ...(sessionTag ? { tag: sessionTag } : {}),
           });
 
           const anomaly = detectCostAnomaly(sessionCost);
