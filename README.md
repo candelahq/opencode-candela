@@ -1,181 +1,137 @@
 # @candelahq/opencode
 
-OpenCode plugin for [Candela](https://github.com/candelahq/candela) — session tracking, cost toasts, rich budget warnings, and budget-aware session compaction.
+> OpenCode plugin for Candela — real-time AI cost tracking, budget guardrails, and spending intelligence.
 
-[![npm](https://img.shields.io/npm/v/@candelahq/opencode)](https://www.npmjs.com/package/@candelahq/opencode)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
-## What It Does
-
-When you use [OpenCode](https://opencode.ai/) with Candela running locally, this plugin automatically:
-
-| Feature | Description |
-|---------|-------------|
-| **Session cost toasts** | Shows token usage and cost when a session goes idle |
-| **Rich budget warnings** | Daily spend, active grants, reset countdowns, color-coded urgency |
-| **Shell env injection** | Sets `CANDELA_PROXY_URL` and `OPENAI_BASE_URL` in all shells |
-| **Compaction context** | Injects current budget + grant state into session compaction summaries |
-
-If Candela is not running, the plugin gracefully no-ops — zero overhead.
+**@candelahq/opencode** connects your [OpenCode](https://opencode.ai) coding agent to [Candela](https://candelahq.com), providing live spending visibility, proactive budget warnings, cost-aware model routing, and rich analytics — all inside your terminal.
 
 ---
 
-## Installation
+## ⚡ Features
 
-### Option 1: npm (recommended)
+- 💰 **Real-Time Cost Tracking** — Per-response cost deltas, session totals, and 24h spend in your status bar and sidebar
+- 📊 **Budget Monitoring** — Threshold toasts at 80/90/100%, budget pacing forecast, reset countdown
+- 🔀 **Smart Model Routing** — Opt-in suggestions to swap to cheaper models when budget is tight
+- 📏 **Context Window Gauge** — Token usage tracking with compaction warnings at 80%+
+- 🎯 **Daily Cost Goals** — Set spending targets, track progress with visual pacing
+- 🛑 **Session Cost Caps** — Per-session spending limits with 80%/100% warnings
+- 📈 **Cost Forecasting** — Extrapolate session cost based on current call rate
+- 🔇 **Quiet Mode** — Suppress info toasts, keep warnings and errors
+- 🏷️ **Session Tagging** — Tag sessions by activity (auto-detects git branch)
+- 📂 **Repo Attribution** — Auto-tracks costs per git repository
+- 📜 **Session History** — Browse past sessions with cost, duration, and tool usage
+- ⏰ **Time-of-Day Patterns** — Discover when you spend the most
+- 🛠️ **Tool Cost Breakdown** — See which tools cost the most per call
+- 📝 **Git Commit Annotation** — Embed cost metadata in commit messages
+- 📦 **Export** — JSON + CSV export of session data
+- 🗄️ **Local Analytics** — JSONL event log with 90-day auto-rotation and 10MB cap
 
-Add to your `opencode.json`:
+---
+
+## 📦 Installation
+
+```bash
+npm install @candelahq/opencode
+```
+
+Add to your OpenCode config (`~/.config/opencode/config.json`):
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@candelahq/opencode"]
-}
-```
-
-### Option 2: Local install
-
-```bash
-# Project-scoped
-mkdir -p .opencode/plugins
-cp -r node_modules/@candelahq/opencode/src .opencode/plugins/opencode-candela/
-
-# Global
-mkdir -p ~/.config/opencode/plugins/opencode-candela
-cp -r node_modules/@candelahq/opencode/src/* ~/.config/opencode/plugins/opencode-candela/
-```
-
----
-
-## Prerequisites
-
-1. **Candela running locally** — `candela start` (requires [candela](https://github.com/candelahq/candela) v0.4.6+)
-2. **Authentication** — run `candela auth login` once to set up Google OAuth credentials (no `gcloud` CLI dependency)
-3. **OpenCode installed** — `npm install -g opencode-ai`
-
-The plugin auto-detects Candela on `localhost:8181`. To use a custom URL:
-
-```bash
-export CANDELA_PROXY_URL="http://localhost:9090"
-```
-
----
-
-## How It Works
-
-### Session Cost Toast
-
-When your OpenCode session goes idle, the plugin shows a summary:
-
-```
-📊 142.3K tokens · $0.47 · 12 calls · 3m42s
-```
-
-### Budget Warnings
-
-On startup and after each session, the plugin checks your full budget state:
-
-```
-💰 Budget: $10.00 remaining (80% used)
-   Active grants: +$5.00 bonus (resets in 3d 14h)
-   Total remaining (waterfall): $15.00
-⚠️ Daily budget is running low!
-```
-
-### Shell Environment
-
-Every shell spawned by OpenCode gets Candela's proxy URL injected:
-
-```bash
-echo $CANDELA_PROXY_URL    # http://localhost:8181
-echo $OPENAI_BASE_URL      # http://localhost:8181/proxy/openai/v1
-```
-
-### Compaction Context
-
-When OpenCode compacts a long session, current budget and grant state is injected:
-
-> This session has used 142.3K tokens ($0.47) across 12 LLM calls.
-> Model breakdown:
->   - claude-sonnet-4 (anthropic): 98.2K tokens, $0.31
->   - gemini-2.5-pro (google): 44.1K tokens, $0.16
-> Daily budget: $10.00 remaining of $50.00 (80% used).
-> Active grants: +$5.00 bonus (resets in 3d 14h). Total remaining: $15.00.
-
----
-
-## Configuration
-
-The plugin works with zero configuration. Optional env vars:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CANDELA_PROXY_URL` | `http://localhost:8181` | Candela server URL |
-
----
-
-## Combining with Candela Provider Config
-
-For full integration, use this plugin alongside Candela providers in your `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@candelahq/opencode"],
-  "provider": {
-    "candela-anthropic": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Claude via Candela",
-      "options": {
-        "baseURL": "http://localhost:8181/proxy/anthropic/v1"
-      },
-      "models": {
-        "claude-sonnet-4-20250514": { "name": "Claude Sonnet 4" },
-        "claude-opus-4-20250514": { "name": "Claude Opus 4" }
-      }
-    },
-    "candela-gemini": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Gemini via Candela",
-      "options": {
-        "baseURL": "http://localhost:8181/proxy/gemini-oai/v1"
-      },
-      "models": {
-        "gemini-3.5-pro": { "name": "Gemini 3.5 Pro" },
-        "gemini-3.5-flash": { "name": "Gemini 3.5 Flash" },
-        "gemini-2.5-pro": { "name": "Gemini 2.5 Pro" },
-        "gemini-2.5-flash": { "name": "Gemini 2.5 Flash" }
-      }
-    }
-  }
+  "plugins": ["@candelahq/opencode"]
 }
 ```
 
 ---
 
-## Related
+## 🚀 Quick Start
 
-- [Candela](https://github.com/candelahq/candela) — OTel-native LLM observability platform
-- [Candela Desktop](https://github.com/candelahq/candela-desktop) — Flutter macOS desktop app
-- [candela-cline](https://www.npmjs.com/package/candela-cline) — Cline plugin
-- [candela-vscode](https://open-vsx.org/extension/candelahq/candela-vscode) — VS Code extension
+1. Start Candela: `candela start`
+2. Add the plugin to your OpenCode config (see above)
+3. Open OpenCode — look for 🕯️ in your status bar
+4. Type `/cost` to see your first spending report
+
+## ⚙️ Configuration
+
+Zero-config when running Candela locally. All settings support environment variable overrides.
+
+### Environment Variables
+
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `CANDELA_URL` | String | `http://localhost:8181` | Candela proxy URL |
+| `CANDELA_SMART_ROUTING` | Boolean | `false` | Enable cost-conscious model routing |
+| `CANDELA_ROUTING_THRESHOLD` | Float (0–1) | `0.7` | Budget fraction to trigger routing |
+| `CANDELA_ROUTING_SAVINGS_THRESHOLD` | Float (0–1) | `0.5` | Min savings to suggest model swap |
+| `CANDELA_DAILY_GOAL` | Number (USD) | — | Daily spending target |
+| `CANDELA_QUIET` | Boolean | `false` | Suppress info-level toasts |
+| `CANDELA_SESSION_CAP` | Number (USD) | — | Per-session cost limit |
+| `CANDELA_SESSION_TAG` | String | — | Session tag for cost attribution |
+
+### Settings File
+
+Persistent settings at `~/.config/opencode/candela-settings.json`.
+
+Resolution priority: **env vars > settings file > defaults**.
 
 ---
 
-## Troubleshooting
+## 💻 Slash Commands
 
-### OpenCode Hangs, Shows Stale Models, or Behaves Unexpectedly
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/cost` | `/spend` | Session cost + 24h total breakdown |
+| `/budget` | `/remaining` | Budget remaining, grants, reset time |
+| `/models` | — | Top models by spend and call count |
+| `/dashboard` | `/dash` | Open Candela web dashboard |
+| `/export` | `/dump` | Export session data to JSON + CSV |
+| `/goal` | — | Set or view daily cost goal |
+| `/quiet` | `/shh` | Toggle quiet mode |
+| `/tag` | `/label` | Tag session for cost attribution |
+| `/cap` | — | Set per-session cost cap |
+| `/history` | `/sessions` | Browse recent sessions |
+| `/patterns` | `/when` | Time-of-day cost analysis |
+| `/annotate` | `/commit-cost` | Git commit cost metadata |
+| `/tools` | `/tool-cost` | Tool cost breakdown |
 
-If OpenCode hangs, shows stale models, or behaves unexpectedly after config changes, delete the OpenCode database:
+---
 
-```bash
-rm -rf ~/.local/share/opencode/opencode.db*
+## 🖥️ Sidebar
+
+The sidebar dashboard shows:
+
+```
+📊 $4.20 · 24h
+🗄️ Cache hit rate: 72%
+🏷️ feat/context-gauge
+⚡ Session: $1.80 · 12 calls
+📈 Forecast: ~$3.30 if 10 more calls
+📏 Context: 45k tokens 🟩 ~35%
+🎯 Goal: $4.20/$20 🟩 21%
+⏱️ Budget exhausted by 4:30 PM
+  claude-sonnet: $2.10 (8 calls)
+  gpt-4o: $1.30 (4 calls)
 ```
 
-Then restart OpenCode. This clears cached state (model lists, provider connections, etc.) and forces a fresh sync.
+---
+
+## 📊 Intelligence Layer
+
+- **Cost Streaks** — Track consecutive under-budget days
+- **Anomaly Detection** — Alert when session cost is 2x+ your average
+- **Budget Pacing** — Estimate budget exhaustion time from hourly burn rate
+- **Model Efficiency** — Score models by cost-per-call vs effectiveness
+- **Weekly Digest** — Week-over-week spending comparison
+- **Time Patterns** — Morning vs afternoon vs evening vs night cost analysis
 
 ---
 
-## License
+## 🛠️ Requirements
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+- **OpenCode** with `@opencode-ai/plugin` support
+- **Candela** proxy running (default: `http://localhost:8181`)
+
+---
+
+## 📄 License
+
+[Apache-2.0](LICENSE)

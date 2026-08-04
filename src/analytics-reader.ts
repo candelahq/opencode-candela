@@ -109,6 +109,7 @@ interface AnalyticsEntry {
   /** Optional rich fields — present when written by newer plugin versions. */
   duration?: number;
   toolCalls?: number;
+  toolUsage?: Record<string, number>;
   models?: string[];
   tag?: string;
   repo?: string;
@@ -576,4 +577,70 @@ export function getTimeOfDayPatterns(): TimeOfDayPattern | null {
     mostExpensive: mostExpensive.name,
     costRatio: Math.round(costRatio * 10) / 10,
   };
+}
+
+// ── Tool Cost Breakdown ──────────────────────────────────────────────────────
+
+export interface ToolCostEntry {
+  tool: string;
+  totalCalls: number;
+  /** Estimated cost per call (session cost / session calls * tool share). */
+  estimatedCostPerCall: number;
+  /** Total estimated cost across all sessions. */
+  estimatedTotalCost: number;
+  /** Percentage of total tool calls. */
+  callShare: number;
+}
+
+/**
+ * Analyze tool usage across sessions and estimate per-tool costs.
+ * Uses proportional allocation: each tool's cost share equals its call share
+ * within each session, multiplied by that session's total cost.
+ * Returns null if no sessions have toolUsage data.
+ */
+export function getToolCostBreakdown(limit = 10): ToolCostEntry[] | null {
+  const entries = parseUniqueEntries();
+  const sessionsWithTools = entries.filter(
+    (e) =>
+      e.toolUsage && Object.keys(e.toolUsage).length > 0 && e.totalCost > 0,
+  );
+  if (sessionsWithTools.length === 0) return null;
+
+  // Aggregate across all sessions using proportional cost allocation
+  const toolTotals = new Map<string, { calls: number; cost: number }>();
+
+  for (const session of sessionsWithTools) {
+    const usage = session.toolUsage;
+    if (!usage) continue;
+    const sessionTotalCalls = Object.values(usage).reduce((a, b) => a + b, 0);
+    if (sessionTotalCalls === 0) continue;
+
+    for (const [tool, calls] of Object.entries(usage)) {
+      const share = calls / sessionTotalCalls;
+      const toolCost = share * session.totalCost;
+      const existing = toolTotals.get(tool) ?? { calls: 0, cost: 0 };
+      existing.calls += calls;
+      existing.cost += toolCost;
+      toolTotals.set(tool, existing);
+    }
+  }
+
+  const totalCalls = [...toolTotals.values()].reduce(
+    (sum, t) => sum + t.calls,
+    0,
+  );
+
+  return [...toolTotals.entries()]
+    .map(([tool, data]) => ({
+      tool,
+      totalCalls: data.calls,
+      estimatedCostPerCall: data.calls > 0 ? data.cost / data.calls : 0,
+      estimatedTotalCost: data.cost,
+      callShare:
+        totalCalls > 0
+          ? Math.max(0.1, Math.round((data.calls / totalCalls) * 1000) / 10)
+          : 0,
+    }))
+    .sort((a, b) => b.estimatedTotalCost - a.estimatedTotalCost)
+    .slice(0, limit);
 }
