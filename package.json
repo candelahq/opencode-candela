@@ -3,7 +3,7 @@
   "version": "0.6.0",
   "description": "OpenCode plugin for Candela — conversational cost queries, budget tracking, model configuration, and LLM observability",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build",
@@ -13,7 +13,7 @@
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/"
   },
-  "types": "src/index.ts",
+  "types": "dist/index.d.ts",
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -61,6 +61,8 @@
     "vitest": "^4.1.10"
   },
   "files": [
-    "src/"
+    "dist/",
+    "README.md",
+    "CHANGELOG.md"
   ]
 }

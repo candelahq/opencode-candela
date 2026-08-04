@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -19,6 +19,7 @@ vi.mock("node:os", () => ({
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   getSettingsPath,
+  incrementCrossPromo,
   resolveSettings,
   toggleQuietMode,
   updateDailyCostGoal,
@@ -35,6 +36,10 @@ const mockWrite = vi.mocked(writeFileSync);
  * Wire up a "virtual filesystem" so writes are readable on next call.
  * The update functions do: readPersisted -> mutate -> writePersisted -> resolveSettings -> readPersisted.
  * We need the second readPersisted to see what was written.
+ *
+ * NOTE: The mock is path-agnostic — writePersisted writes to a .tmp path then
+ * renames, but our mock captures any writeFileSync call regardless of path.
+ * This is intentional; we're testing business logic, not filesystem atomicity.
  */
 function wireWriteThrough() {
   let stored: string | null = null;
@@ -61,13 +66,11 @@ function seedSettings(data: Record<string, unknown>) {
 describe("settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Clear env vars
-    delete process.env.CANDELA_SMART_ROUTING;
-    delete process.env.CANDELA_DAILY_GOAL;
-    delete process.env.CANDELA_QUIET;
-    delete process.env.CANDELA_SESSION_CAP;
-    delete process.env.CANDELA_ROUTING_THRESHOLD;
-    delete process.env.CANDELA_ROUTING_SAVINGS_THRESHOLD;
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe("resolveSettings", () => {
@@ -104,11 +107,20 @@ describe("settings", () => {
       mockRead.mockReturnValue(
         JSON.stringify({ version: 1, dailyCostGoal: 25, quietMode: false }),
       );
-      process.env.CANDELA_DAILY_GOAL = "50";
-      process.env.CANDELA_QUIET = "true";
+      vi.stubEnv("CANDELA_DAILY_GOAL", "50");
+      vi.stubEnv("CANDELA_QUIET", "true");
       const settings = resolveSettings();
       expect(settings.dailyCostGoal).toBe(50);
       expect(settings.quietMode).toBe(true);
+    });
+
+    it("three-way priority: env > persisted > default", () => {
+      // Persisted sets cap to 15, env overrides to 30, default would be null
+      seedSettings({ sessionCostCap: 15, dailyCostGoal: 10 });
+      vi.stubEnv("CANDELA_SESSION_CAP", "30");
+      const settings = resolveSettings();
+      expect(settings.sessionCostCap).toBe(30); // env wins over persisted 15
+      expect(settings.dailyCostGoal).toBe(10); // persisted wins over default null
     });
 
     it("handles malformed settings file gracefully", () => {
@@ -123,6 +135,21 @@ describe("settings", () => {
     it("returns path under mock home", () => {
       expect(getSettingsPath()).toContain("/mock-home/");
       expect(getSettingsPath()).toContain("candela-settings.json");
+    });
+  });
+
+  describe("incrementCrossPromo", () => {
+    it("increments from 0 on first call", () => {
+      wireWriteThrough();
+      const count = incrementCrossPromo();
+      expect(count).toBe(1);
+      expect(mockWrite).toHaveBeenCalled();
+    });
+
+    it("increments existing count", () => {
+      seedSettings({ crossPromoShown: 3 });
+      const count = incrementCrossPromo();
+      expect(count).toBe(4);
     });
   });
 
@@ -184,7 +211,7 @@ describe("settings", () => {
 
     it("respects env var override", () => {
       wireWriteThrough();
-      process.env.CANDELA_SESSION_CAP = "25";
+      vi.stubEnv("CANDELA_SESSION_CAP", "25");
       const result = updateSessionCostCap(10);
       // Env var takes priority in resolve
       expect(result.sessionCostCap).toBe(25);

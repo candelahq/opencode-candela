@@ -43,6 +43,13 @@ Add to your OpenCode config (`~/.config/opencode/config.json`):
 
 ---
 
+## 🚀 Quick Start
+
+1. Start Candela: `candela start`
+2. Add the plugin to your OpenCode config (see above)
+3. Open OpenCode — look for 🕯️ in your status bar
+4. Type `/cost` to see your first spending report
+
 ## ⚙️ Configuration
 
 Zero-config when running Candela locally. All settings support environment variable overrides.
@@ -58,6 +65,7 @@ Zero-config when running Candela locally. All settings support environment varia
 | `CANDELA_DAILY_GOAL` | Number (USD) | — | Daily spending target |
 | `CANDELA_QUIET` | Boolean | `false` | Suppress info-level toasts |
 | `CANDELA_SESSION_CAP` | Number (USD) | — | Per-session cost limit |
+| `CANDELA_SESSION_TAG` | String | — | Session tag for cost attribution |
 
 ### Settings File
 

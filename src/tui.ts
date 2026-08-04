@@ -815,13 +815,12 @@ export const tui: TuiPlugin = async (api) => {
             topTool.estimatedCostPerCall > 0 &&
             bottomTool.estimatedCostPerCall > 0
           ) {
-            const ratio = Math.round(
-              topTool.estimatedCostPerCall / bottomTool.estimatedCostPerCall,
-            );
-            if (ratio > 1) {
+            const ratio =
+              topTool.estimatedCostPerCall / bottomTool.estimatedCostPerCall;
+            if (ratio > 1.5) {
               lines.push("");
               lines.push(
-                `💡 ${topTool.tool} costs ~${ratio}x more per call than ${bottomTool.tool}`,
+                `💡 ${topTool.tool} costs ~${ratio.toFixed(1)}x more per call than ${bottomTool.tool}`,
               );
             }
           }

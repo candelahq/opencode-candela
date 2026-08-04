@@ -71,3 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/cost`, `/budget`, `/models`, `/dashboard` slash commands
 - Smart model routing suggestions based on budget thresholds
 - Cost-awareness system prompt injection during compaction
+
+[0.6.0]: https://github.com/candelahq/opencode-candela/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/candelahq/opencode-candela/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/candelahq/opencode-candela/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/candelahq/opencode-candela/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/candelahq/opencode-candela/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/candelahq/opencode-candela/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/candelahq/opencode-candela/releases/tag/v0.2.0

@@ -637,7 +637,9 @@ export function getToolCostBreakdown(limit = 10): ToolCostEntry[] | null {
       estimatedCostPerCall: data.calls > 0 ? data.cost / data.calls : 0,
       estimatedTotalCost: data.cost,
       callShare:
-        totalCalls > 0 ? Math.round((data.calls / totalCalls) * 100) : 0,
+        totalCalls > 0
+          ? Math.max(0.1, Math.round((data.calls / totalCalls) * 1000) / 10)
+          : 0,
     }))
     .sort((a, b) => b.estimatedTotalCost - a.estimatedTotalCost)
     .slice(0, limit);
