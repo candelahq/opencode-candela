@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  _resetRotationFlag,
   detectCostAnomaly,
   getCumulativeCost,
   getSessionCount,
+  pruneAnalytics,
   readCostStreaks,
   readSpendTrends,
   readWeeklyDigest,
@@ -15,6 +17,8 @@ vi.mock("node:fs", async (importOriginal) => {
     ...actual,
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
+    statSync: vi.fn(() => ({ size: 1024 })),
+    writeFileSync: vi.fn(),
   };
 });
 
@@ -23,10 +27,12 @@ vi.mock("node:os", () => ({
   homedir: () => "/mock-home",
 }));
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 const mockExists = vi.mocked(existsSync);
 const mockRead = vi.mocked(readFileSync);
+const mockStat = vi.mocked(statSync);
+const mockWrite = vi.mocked(writeFileSync);
 
 let entryCounter = 0;
 function makeEntry(
@@ -382,6 +388,52 @@ describe("analytics-reader", () => {
       const anomaly = detectCostAnomaly(7.0);
       expect(anomaly).not.toBeNull();
       expect(anomaly?.isAnomaly).toBe(false);
+    });
+  });
+
+  describe("pruneAnalytics", () => {
+    beforeEach(() => {
+      _resetRotationFlag();
+    });
+
+    it("does nothing when file does not exist", () => {
+      mockExists.mockReturnValue(false);
+      const result = pruneAnalytics();
+      expect(result).toEqual({ prunedCount: 0, keptCount: 0 });
+      expect(mockWrite).not.toHaveBeenCalled();
+    });
+
+    it("prunes entries older than 90 days", () => {
+      mockExists.mockReturnValue(true);
+      mockStat.mockReturnValue({ size: 1024 } as ReturnType<typeof statSync>);
+
+      const recent = new Date();
+      recent.setDate(recent.getDate() - 10);
+      const old = new Date();
+      old.setDate(old.getDate() - 100);
+
+      const lines = [
+        makeEntry(old.toISOString().slice(0, 10), 5.0, "old-session"),
+        makeEntry(recent.toISOString().slice(0, 10), 3.0, "recent-session"),
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const result = pruneAnalytics();
+      expect(result.prunedCount).toBe(1);
+      expect(result.keptCount).toBe(1);
+      expect(mockWrite).toHaveBeenCalled();
+    });
+
+    it("only runs once per process (idempotent)", () => {
+      mockExists.mockReturnValue(true);
+      mockStat.mockReturnValue({ size: 1024 } as ReturnType<typeof statSync>);
+      mockRead.mockReturnValue(makeEntry("2026-08-01", 5.0));
+
+      // First call runs
+      pruneAnalytics();
+      // Second call should be a no-op
+      const result = pruneAnalytics();
+      expect(result).toEqual({ prunedCount: 0, keptCount: 0 });
     });
   });
 });

@@ -4,9 +4,12 @@
  * Reads the JSONL analytics file written by the plugin to compute
  * spend trends (yesterday, this week, daily average) for the
  * startup summary toast.
+ *
+ * Includes automatic rotation: entries older than 90 days are pruned
+ * and the file is capped at MAX_FILE_BYTES (10 MB).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +19,62 @@ const ANALYTICS_PATH = join(
   "opencode",
   "candela-analytics.jsonl",
 );
+
+/** Maximum age of analytics entries in milliseconds (90 days). */
+const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+/** Maximum file size before forced pruning (10 MB). */
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+let rotationDone = false;
+
+/**
+ * Prune analytics entries older than 90 days. Also triggers if file > 10 MB.
+ * Runs at most once per process to avoid repeated disk writes.
+ */
+export function pruneAnalytics(): { prunedCount: number; keptCount: number } {
+  if (rotationDone) return { prunedCount: 0, keptCount: 0 };
+  rotationDone = true;
+
+  if (!existsSync(ANALYTICS_PATH)) return { prunedCount: 0, keptCount: 0 };
+
+  try {
+    const stats = statSync(ANALYTICS_PATH);
+    const cutoff = new Date(Date.now() - MAX_AGE_MS).toISOString();
+    const needsPrune = stats.size > MAX_FILE_BYTES;
+
+    const raw = readFileSync(ANALYTICS_PATH, "utf-8");
+    const lines = raw.trim().split("\n").filter(Boolean);
+
+    const kept: string[] = [];
+    let pruned = 0;
+
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (isValidEntry(parsed) && parsed.ts >= cutoff) {
+          kept.push(line);
+        } else {
+          pruned++;
+        }
+      } catch {
+        pruned++; // drop malformed lines
+      }
+    }
+
+    if (pruned > 0 || needsPrune) {
+      writeFileSync(ANALYTICS_PATH, `${kept.join("\n")}\n`, "utf-8");
+    }
+
+    return { prunedCount: pruned, keptCount: kept.length };
+  } catch {
+    return { prunedCount: 0, keptCount: 0 };
+  }
+}
+
+/** @internal — Reset the once-per-process flag. Only for tests. */
+export function _resetRotationFlag(): void {
+  rotationDone = false;
+}
 
 interface AnalyticsEntry {
   ts: string;
