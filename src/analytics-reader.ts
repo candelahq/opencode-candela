@@ -242,3 +242,122 @@ export function getSessionCount(): number {
 export function getCumulativeCost(): number {
   return parseUniqueEntries().reduce((sum, e) => sum + e.totalCost, 0);
 }
+
+export interface CostStreak {
+  /** Consecutive days (ending yesterday) where daily cost was under the target */
+  currentStreak: number;
+  /** Longest streak ever recorded */
+  record: number;
+  /** The daily target — rolling 7-day average */
+  dailyTarget: number;
+}
+
+export function readCostStreaks(): CostStreak | null {
+  const entries = parseUniqueEntries();
+  if (entries.length === 0) return null;
+
+  const dailyCosts = new Map<string, number>();
+  for (const e of entries) {
+    const day = e.ts.slice(0, 10);
+    dailyCosts.set(day, (dailyCosts.get(day) ?? 0) + e.totalCost);
+  }
+
+  if (dailyCosts.size < 7) return null;
+
+  const now = new Date();
+  const sortedDays = Array.from(dailyCosts.keys()).sort();
+
+  const firstDay = new Date(sortedDays[0]);
+  const lastDay = new Date(now.toISOString().slice(0, 10)); // today
+
+  // Create an array of all days from firstDay to today
+  const allDays: string[] = [];
+  for (
+    let d = new Date(firstDay);
+    d <= lastDay;
+    d.setUTCDate(d.getUTCDate() + 1)
+  ) {
+    allDays.push(d.toISOString().slice(0, 10));
+  }
+
+  let record = 0;
+
+  // Calculate streaks forward to get the record
+  let current = 0;
+  for (let i = 7; i < allDays.length; i++) {
+    let sum = 0;
+    for (let j = 1; j <= 7; j++) {
+      sum += dailyCosts.get(allDays[i - j]) ?? 0;
+    }
+    const target = sum / 7;
+    const cost = dailyCosts.get(allDays[i]) ?? 0;
+
+    if (cost <= target) {
+      current++;
+      if (current > record) record = current;
+    } else {
+      current = 0;
+    }
+  }
+
+  // Calculate current streak backwards from yesterday
+  let currentStreak = 0;
+  const yesterdayIdx = allDays.length - 2; // assuming last is today
+  if (yesterdayIdx >= 7) {
+    for (let i = yesterdayIdx; i >= 7; i--) {
+      let sum = 0;
+      for (let j = 1; j <= 7; j++) {
+        sum += dailyCosts.get(allDays[i - j]) ?? 0;
+      }
+      const target = sum / 7;
+      const cost = dailyCosts.get(allDays[i]) ?? 0;
+      if (cost <= target) {
+        currentStreak++;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Get today's target (rolling avg of last 7 days including yesterday)
+  let sum = 0;
+  for (let j = 1; j <= 7; j++) {
+    sum += dailyCosts.get(allDays[allDays.length - 1 - j]) ?? 0;
+  }
+  const dailyTarget = sum / 7;
+
+  return {
+    currentStreak,
+    record,
+    dailyTarget,
+  };
+}
+
+export interface CostAnomaly {
+  isAnomaly: boolean;
+  multiplier: number;
+  avgSessionCost: number;
+}
+
+export function detectCostAnomaly(
+  currentSessionCost: number,
+): CostAnomaly | null {
+  const entries = parseUniqueEntries();
+  if (entries.length < 5) return null;
+
+  // last 20 unique sessions
+  const last20 = entries.sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, 20);
+
+  const sum = last20.reduce((acc, e) => acc + e.totalCost, 0);
+  const avgSessionCost = sum / last20.length;
+
+  const multiplier =
+    avgSessionCost > 0 ? currentSessionCost / avgSessionCost : 0;
+  const isAnomaly = multiplier >= 2.0;
+
+  return {
+    isAnomaly,
+    multiplier,
+    avgSessionCost,
+  };
+}

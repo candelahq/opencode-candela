@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  detectCostAnomaly,
   getCumulativeCost,
   getSessionCount,
+  readCostStreaks,
   readSpendTrends,
   readWeeklyDigest,
 } from "../analytics-reader.js";
@@ -303,6 +305,83 @@ describe("analytics-reader", () => {
       expect(digest?.thisWeekSessions).toBeGreaterThan(0);
       expect(digest?.lastWeekSessions).toBeGreaterThan(0);
       expect(typeof digest?.changePercent).toBe("number");
+    });
+  });
+
+  describe("readCostStreaks", () => {
+    it("returns null with fewer than 7 days", () => {
+      mockExists.mockReturnValue(true);
+      const lines: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        lines.push(makeEntry(d.toISOString().slice(0, 10), 5.0, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+      expect(readCostStreaks()).toBeNull();
+    });
+
+    it("computes streak correctly", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-10T12:00:00Z")); // Sunday
+
+      mockExists.mockReturnValue(true);
+      const lines: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        // Days 1,2,3 (yesterday back) cost 1.0 each
+        // All other days cost 20.0 each
+        // 7-day avg will be ~(20*4 + 1*3)/7 ≈ 11.9, so 1.0 is well under
+        const cost = i > 0 && i <= 3 ? 1.0 : 20.0;
+        lines.push(makeEntry(d.toISOString().slice(0, 10), cost, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const streaks = readCostStreaks();
+      expect(streaks).not.toBeNull();
+      expect(streaks?.currentStreak).toBeGreaterThanOrEqual(2);
+      expect(streaks?.dailyTarget).toBeGreaterThan(0);
+      vi.useRealTimers();
+    });
+  });
+
+  describe("detectCostAnomaly", () => {
+    it("returns null with fewer than 5 sessions", () => {
+      mockExists.mockReturnValue(true);
+      const lines: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        lines.push(makeEntry("2026-08-01", 5.0, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+      expect(detectCostAnomaly(15.0)).toBeNull();
+    });
+
+    it("detects anomaly when current cost is 3x average", () => {
+      mockExists.mockReturnValue(true);
+      const lines: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        lines.push(makeEntry("2026-08-01", 5.0, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const anomaly = detectCostAnomaly(15.0);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly?.isAnomaly).toBe(true);
+      expect(anomaly?.multiplier).toBe(3.0);
+    });
+
+    it("does not flag normal sessions", () => {
+      mockExists.mockReturnValue(true);
+      const lines: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        lines.push(makeEntry("2026-08-01", 5.0, `s${i}`));
+      }
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const anomaly = detectCostAnomaly(7.0);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly?.isAnomaly).toBe(false);
     });
   });
 });

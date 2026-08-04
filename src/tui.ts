@@ -10,7 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
@@ -148,11 +148,38 @@ export const tui: TuiPlugin = async (api) => {
               ]
             : [];
 
+        // Budget pacing — estimate when budget will run out
+        const pacingLine: string[] = [];
+        if (
+          budgetFraction !== null &&
+          budgetRemaining !== null &&
+          budgetFraction > 0 &&
+          budgetFraction < 1
+        ) {
+          // Estimate hours remaining at current burn rate
+          // usedFraction over ~hours_elapsed gives burn rate
+          const hoursElapsed = Math.max(1, new Date().getUTCHours() || 1);
+          const fractionPerHour = budgetFraction / hoursElapsed;
+          const hoursLeft =
+            fractionPerHour > 0 ? (1 - budgetFraction) / fractionPerHour : 999;
+          if (hoursLeft <= 8) {
+            const exhaustTime = new Date(Date.now() + hoursLeft * 3600000);
+            const timeStr = exhaustTime.toLocaleTimeString("en-US", {
+              hour: "numeric",
+              minute: "2-digit",
+            });
+            pacingLine.push(
+              `⏱️ At current rate, budget exhausted by ${timeStr}`,
+            );
+          }
+        }
+
         return [
           budgetLine,
           costLine,
           ...cacheLine,
           ...activityLine,
+          ...pacingLine,
           ...modelLines,
         ].join("\n") as unknown as null;
       },
@@ -193,6 +220,9 @@ export const tui: TuiPlugin = async (api) => {
         refresh();
         const parts: string[] = [];
         parts.push(`🕯️ ${formatCost(totalCost24h)} 24h`);
+        if (lastResponseCost !== null && lastResponseCost > 0) {
+          parts.push(`↳${formatCost(lastResponseCost)}`);
+        }
         if (budgetPct !== null) {
           parts.push(`${budgetEmoji}${budgetPct}%`);
         }
@@ -372,7 +402,7 @@ export const tui: TuiPlugin = async (api) => {
       {
         title: "Candela: Export Session Data",
         value: "candela.export",
-        description: "Export current session cost data as JSON",
+        description: "Export current session cost data as JSON and CSV",
         category: "Candela",
         slash: {
           name: "export",
@@ -391,23 +421,36 @@ export const tui: TuiPlugin = async (api) => {
             cacheHitRate,
             models: topModels,
           };
-          // Write to ~/.config/opencode/candela-export.json
-          const exportPath = join(
-            homedir(),
-            ".config",
-            "opencode",
-            "candela-export.json",
-          );
-          const dir = dirname(exportPath);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(
-            exportPath,
-            JSON.stringify(exportData, null, 2),
-            "utf-8",
-          );
+          const exportDir = join(homedir(), ".config", "opencode");
+          mkdirSync(exportDir, { recursive: true });
+
+          // JSON export
+          const jsonPath = join(exportDir, "candela-export.json");
+          writeFileSync(jsonPath, JSON.stringify(exportData, null, 2), "utf-8");
+
+          // CSV export — models breakdown
+          const csvLines = [
+            "model,cost_usd,calls,cost_per_call",
+            ...topModels.map(
+              (m) =>
+                `${m.model},${m.cost.toFixed(4)},${m.calls},${m.calls > 0 ? (m.cost / m.calls).toFixed(4) : "0"}`,
+            ),
+            "",
+            "metric,value",
+            `total_cost_24h,${totalCost24h.toFixed(4)}`,
+            `session_cost,${sessionCostUsd.toFixed(4)}`,
+            `session_calls,${sessionCalls}`,
+            `budget_pct,${budgetPct ?? "N/A"}`,
+            `budget_remaining,${budgetRemaining?.toFixed(2) ?? "N/A"}`,
+            `cache_hit_rate,${cacheHitRate?.toFixed(1) ?? "N/A"}`,
+            `exported_at,${exportData.exportedAt}`,
+          ];
+          const csvPath = join(exportDir, "candela-export.csv");
+          writeFileSync(csvPath, csvLines.join("\n"), "utf-8");
+
           api.ui.toast({
             title: "📦 Exported",
-            message: `Session data saved to ${exportPath}`,
+            message: `JSON: ${jsonPath}\nCSV: ${csvPath}`,
             variant: "info",
           });
         },
