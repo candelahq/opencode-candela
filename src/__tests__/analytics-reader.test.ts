@@ -31,12 +31,19 @@ vi.mock("node:os", () => ({
   homedir: () => "/mock-home",
 }));
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 
 const mockExists = vi.mocked(existsSync);
 const mockRead = vi.mocked(readFileSync);
 const mockStat = vi.mocked(statSync);
 const mockWrite = vi.mocked(writeFileSync);
+const mockRename = vi.mocked(renameSync);
 
 let entryCounter = 0;
 function makeEntry(
@@ -425,7 +432,19 @@ describe("analytics-reader", () => {
       const result = pruneAnalytics();
       expect(result.prunedCount).toBe(1);
       expect(result.keptCount).toBe(1);
-      expect(mockWrite).toHaveBeenCalled();
+
+      // Assert atomic write: tmp file written, then renamed to analytics path
+      const analyticsPath =
+        "/mock-home/.config/opencode/candela-analytics.jsonl";
+      expect(mockWrite).toHaveBeenCalledWith(
+        expect.stringContaining(".tmp."),
+        expect.any(String),
+        "utf-8",
+      );
+      expect(mockRename).toHaveBeenCalledWith(
+        expect.stringContaining(".tmp."),
+        analyticsPath,
+      );
     });
 
     it("only runs once per process (idempotent)", () => {

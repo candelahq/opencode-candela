@@ -148,6 +148,7 @@ export function createContextHook(
   let cachedContext: string | null = null;
   let cachedFraction = 0;
   let lastFetch = 0;
+  let refreshPromise: Promise<void> | null = null;
   const injectedSessions = new Set<string>();
   const CACHE_TTL = 60_000; // 1 minute
 
@@ -164,53 +165,65 @@ export function createContextHook(
 
     // Refresh cache if stale
     if (!cachedContext || now - lastFetch > CACHE_TTL) {
-      // Set lastFetch before await to prevent thundering herd —
-      // concurrent callers will use stale cache while we refresh.
-      lastFetch = now;
-      try {
-        const data = await candela.getDashboardData(24);
-        if (data) {
-          const parts: string[] = ["[Candela]"];
+      // Coalesce concurrent callers — only one inflight request at a time.
+      // On cold start (cachedContext === null), callers await the shared promise.
+      // On stale cache, lastFetch prevents duplicate requests.
+      if (!refreshPromise) {
+        lastFetch = now;
+        refreshPromise = (async () => {
+          try {
+            const data = await candela.getDashboardData(24);
+            if (data) {
+              const parts: string[] = ["[Candela]"];
 
-          // Budget status
-          if (data.budget) {
-            const b = data.budget;
-            cachedFraction = b.usedFraction;
-            parts.push(
-              `Budget: ${b.percentUsed.toFixed(0)}% used (${formatCost(b.spentUsd)} of ${formatCost(b.limitUsd)}).`,
-            );
+              // Budget status
+              if (data.budget) {
+                const b = data.budget;
+                cachedFraction = b.usedFraction;
+                parts.push(
+                  `Budget: ${b.percentUsed.toFixed(0)}% used (${formatCost(b.spentUsd)} of ${formatCost(b.limitUsd)}).`,
+                );
 
-            // Graduated urgency
-            const guidance = budgetGuidance(b.usedFraction);
-            if (guidance) parts.push(guidance);
-          } else {
-            cachedFraction = 0;
+                // Graduated urgency
+                const guidance = budgetGuidance(b.usedFraction);
+                if (guidance) parts.push(guidance);
+              } else {
+                cachedFraction = 0;
+              }
+
+              // Last 24h spend
+              if (data.usage.totalCostUsd != null) {
+                parts.push(
+                  `Last 24h spend: ${formatCost(data.usage.totalCostUsd)}.`,
+                );
+              }
+
+              // Cache effectiveness
+              const totalCacheRead = data.models.reduce(
+                (s, m) => s + m.cacheReadTokens,
+                0,
+              );
+              if (totalCacheRead > 0 && data.usage.inputTokens > 0) {
+                const hitRate = Math.min(
+                  100,
+                  (totalCacheRead / data.usage.inputTokens) * 100,
+                ).toFixed(0);
+                parts.push(`Cache hit rate: ${hitRate}%.`);
+              }
+
+              cachedContext = parts.join(" ");
+            }
+          } catch {
+            // Non-fatal — keep using stale cache if we have it
+          } finally {
+            refreshPromise = null;
           }
+        })();
+      }
 
-          // Last 24h spend
-          if (data.usage.totalCostUsd != null) {
-            parts.push(
-              `Last 24h spend: ${formatCost(data.usage.totalCostUsd)}.`,
-            );
-          }
-
-          // Cache effectiveness
-          const totalCacheRead = data.models.reduce(
-            (s, m) => s + m.cacheReadTokens,
-            0,
-          );
-          if (totalCacheRead > 0 && data.usage.inputTokens > 0) {
-            const hitRate = Math.min(
-              100,
-              (totalCacheRead / data.usage.inputTokens) * 100,
-            ).toFixed(0);
-            parts.push(`Cache hit rate: ${hitRate}%.`);
-          }
-
-          cachedContext = parts.join(" ");
-        }
-      } catch {
-        // Non-fatal — keep using stale cache if we have it
+      // On cold start, wait for the result; otherwise use stale cache
+      if (!cachedContext) {
+        await refreshPromise;
       }
     }
 
