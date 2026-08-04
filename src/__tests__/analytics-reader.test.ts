@@ -4,6 +4,8 @@ import {
   detectCostAnomaly,
   getCumulativeCost,
   getSessionCount,
+  getSessionHistory,
+  getTimeOfDayPatterns,
   pruneAnalytics,
   readCostStreaks,
   readSpendTrends,
@@ -434,6 +436,85 @@ describe("analytics-reader", () => {
       // Second call should be a no-op
       const result = pruneAnalytics();
       expect(result).toEqual({ prunedCount: 0, keptCount: 0 });
+    });
+  });
+
+  describe("getSessionHistory", () => {
+    it("returns empty array when no file", () => {
+      mockExists.mockReturnValue(false);
+      expect(getSessionHistory()).toEqual([]);
+    });
+
+    it("returns sessions newest-first with rich fields", () => {
+      mockExists.mockReturnValue(true);
+      const lines = [
+        JSON.stringify({
+          ts: "2026-08-01T10:00:00.000Z",
+          sessionId: "s1",
+          totalCost: 2.0,
+          duration: 600,
+          toolCalls: 10,
+          models: ["gpt-4o"],
+          tag: "debugging",
+          repo: "my-app",
+        }),
+        JSON.stringify({
+          ts: "2026-08-02T14:00:00.000Z",
+          sessionId: "s2",
+          totalCost: 5.0,
+          duration: 1200,
+          toolCalls: 25,
+          models: ["claude-sonnet"],
+        }),
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+      const history = getSessionHistory(10);
+      expect(history).toHaveLength(2);
+      // Newest first
+      expect(history[0].sessionId).toBe("s2");
+      expect(history[0].totalCost).toBe(5.0);
+      expect(history[0].tag).toBeNull();
+      expect(history[1].sessionId).toBe("s1");
+      expect(history[1].tag).toBe("debugging");
+      expect(history[1].repo).toBe("my-app");
+    });
+
+    it("respects limit", () => {
+      mockExists.mockReturnValue(true);
+      const lines = Array.from({ length: 20 }, (_, i) =>
+        makeEntry("2026-08-01", i + 1),
+      );
+      mockRead.mockReturnValue(lines.join("\n"));
+      expect(getSessionHistory(5)).toHaveLength(5);
+    });
+  });
+
+  describe("getTimeOfDayPatterns", () => {
+    it("returns null with fewer than 5 sessions", () => {
+      mockExists.mockReturnValue(true);
+      const lines = [
+        makeEntry("2026-08-01", 1.0, undefined, 9),
+        makeEntry("2026-08-01", 2.0, undefined, 14),
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+      expect(getTimeOfDayPatterns()).toBeNull();
+    });
+
+    it("groups sessions into time buckets", () => {
+      mockExists.mockReturnValue(true);
+      const lines = [
+        makeEntry("2026-08-01", 1.0, undefined, 7), // Morning
+        makeEntry("2026-08-01", 1.5, undefined, 10), // Morning
+        makeEntry("2026-08-01", 5.0, undefined, 14), // Afternoon
+        makeEntry("2026-08-01", 6.0, undefined, 15), // Afternoon
+        makeEntry("2026-08-01", 2.0, undefined, 20), // Evening
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+      const patterns = getTimeOfDayPatterns();
+      expect(patterns).not.toBeNull();
+      expect(patterns?.mostExpensive).toBe("Afternoon");
+      expect(patterns?.cheapest).toBe("Morning");
+      expect(patterns?.costRatio).toBeGreaterThan(1);
     });
   });
 });

@@ -106,6 +106,12 @@ interface AnalyticsEntry {
   ts: string;
   sessionId: string;
   totalCost: number;
+  /** Optional rich fields — present when written by newer plugin versions. */
+  duration?: number;
+  toolCalls?: number;
+  models?: string[];
+  tag?: string;
+  repo?: string;
 }
 
 /** Type guard: require string ts, non-empty string sessionId, finite cost. */
@@ -444,5 +450,130 @@ export function detectCostAnomaly(
     isAnomaly,
     multiplier,
     avgSessionCost,
+  };
+}
+
+// ── Session History ──────────────────────────────────────────────────────────
+
+export interface SessionHistoryEntry {
+  ts: string;
+  sessionId: string;
+  totalCost: number;
+  duration: number | null;
+  toolCalls: number | null;
+  models: string[];
+  tag: string | null;
+  repo: string | null;
+}
+
+/**
+ * Get the last N sessions from analytics, newest first.
+ * Returns rich session data when available.
+ */
+export function getSessionHistory(limit = 15): SessionHistoryEntry[] {
+  const entries = parseUniqueEntries();
+  return entries
+    .sort((a, b) => b.ts.localeCompare(a.ts))
+    .slice(0, limit)
+    .map((e) => ({
+      ts: e.ts,
+      sessionId: e.sessionId,
+      totalCost: e.totalCost,
+      duration: e.duration ?? null,
+      toolCalls: e.toolCalls ?? null,
+      models: e.models ?? [],
+      tag: e.tag ?? null,
+      repo: e.repo ?? null,
+    }));
+}
+
+// ── Time-of-Day Patterns ─────────────────────────────────────────────────────
+
+export interface TimeOfDayPattern {
+  /** Average cost per session by hour bucket (morning/afternoon/evening/night). */
+  buckets: {
+    name: string;
+    hours: string;
+    avgCost: number;
+    sessionCount: number;
+  }[];
+  /** The cheapest time bucket. */
+  cheapest: string;
+  /** The most expensive time bucket. */
+  mostExpensive: string;
+  /** Ratio: most expensive / cheapest. */
+  costRatio: number;
+}
+
+/**
+ * Analyze cost patterns by time of day.
+ * Groups sessions into 4 buckets: Morning (6-12), Afternoon (12-18),
+ * Evening (18-22), Night (22-6).
+ * Returns null if fewer than 5 sessions.
+ */
+export function getTimeOfDayPatterns(): TimeOfDayPattern | null {
+  const entries = parseUniqueEntries();
+  if (entries.length < 5) return null;
+
+  const bucketDefs = [
+    { name: "Morning", hours: "6am–12pm", min: 6, max: 12 },
+    { name: "Afternoon", hours: "12pm–6pm", min: 12, max: 18 },
+    { name: "Evening", hours: "6pm–10pm", min: 18, max: 22 },
+    { name: "Night", hours: "10pm–6am", min: 22, max: 6 },
+  ];
+
+  const bucketData: Record<string, { total: number; count: number }> = {};
+  for (const b of bucketDefs) {
+    bucketData[b.name] = { total: 0, count: 0 };
+  }
+
+  for (const e of entries) {
+    const hour = new Date(e.ts).getUTCHours();
+    let bucketName = "Night"; // default
+    for (const b of bucketDefs) {
+      if (b.min < b.max) {
+        if (hour >= b.min && hour < b.max) {
+          bucketName = b.name;
+          break;
+        }
+      } else {
+        // Night wraps: 22-6
+        if (hour >= b.min || hour < b.max) {
+          bucketName = b.name;
+          break;
+        }
+      }
+    }
+    bucketData[bucketName].total += e.totalCost;
+    bucketData[bucketName].count++;
+  }
+
+  const buckets = bucketDefs.map((b) => ({
+    name: b.name,
+    hours: b.hours,
+    avgCost:
+      bucketData[b.name].count > 0
+        ? bucketData[b.name].total / bucketData[b.name].count
+        : 0,
+    sessionCount: bucketData[b.name].count,
+  }));
+
+  const activeBuckets = buckets.filter((b) => b.sessionCount > 0);
+  if (activeBuckets.length < 2) return null;
+
+  const cheapest = activeBuckets.reduce((min, b) =>
+    b.avgCost < min.avgCost ? b : min,
+  );
+  const mostExpensive = activeBuckets.reduce((max, b) =>
+    b.avgCost > max.avgCost ? b : max,
+  );
+  const costRatio =
+    cheapest.avgCost > 0 ? mostExpensive.avgCost / cheapest.avgCost : 0;
+
+  return {
+    buckets,
+    cheapest: cheapest.name,
+    mostExpensive: mostExpensive.name,
+    costRatio: Math.round(costRatio * 10) / 10,
   };
 }
