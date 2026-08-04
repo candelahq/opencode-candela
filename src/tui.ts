@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
+import { resolveSettings, updateDailyCostGoal } from "./settings.js";
 
 import { formatCost } from "./utils.js";
 
@@ -38,6 +39,11 @@ export const tui: TuiPlugin = async (api) => {
   let cacheHitRate: number | null = null;
   /** Raw 0.0–1.0 fraction for accurate threshold math (avoids rounding error). */
   let budgetFraction: number | null = null;
+  /** Session input tokens — for context window gauge */
+  let sessionInputTokens = 0;
+  let prevInputTokens: number | null = null;
+  /** 24h input token count from last refresh — avoids extra API call */
+  let lastInputTokens24h = 0;
 
   // Per-response cost/call delta tracking — accumulated on each session.idle
   let prevTotalCost: number | null = null;
@@ -70,6 +76,7 @@ export const tui: TuiPlugin = async (api) => {
       }
 
       totalCost24h = data.usage.totalCostUsd ?? 0;
+      lastInputTokens24h = data.usage.inputTokens ?? 0;
 
       if (data.models) {
         topModels = data.models
@@ -156,8 +163,6 @@ export const tui: TuiPlugin = async (api) => {
           budgetFraction > 0 &&
           budgetFraction < 1
         ) {
-          // Estimate hours remaining at current burn rate
-          // usedFraction over ~hours_elapsed gives burn rate
           const hoursElapsed = Math.max(1, new Date().getUTCHours() || 1);
           const fractionPerHour = budgetFraction / hoursElapsed;
           const hoursLeft =
@@ -174,11 +179,40 @@ export const tui: TuiPlugin = async (api) => {
           }
         }
 
+        // Context window gauge
+        const contextLine: string[] = [];
+        if (sessionInputTokens > 0) {
+          const kTok = (sessionInputTokens / 1000).toFixed(0);
+          // Estimate capacity based on common context windows
+          const capacity = 128_000; // reasonable default
+          const pct = Math.round((sessionInputTokens / capacity) * 100);
+          const bar = pct >= 80 ? "🟥" : pct >= 60 ? "🟨" : "🟩";
+          contextLine.push(`📏 Context: ${kTok}k tokens ${bar} ~${pct}%`);
+          if (pct >= 80) {
+            contextLine.push("  ⚠️ Compaction likely soon");
+          }
+        }
+
+        // Daily cost goal progress
+        const goalLine: string[] = [];
+        const settings = resolveSettings();
+        if (settings.dailyCostGoal !== null && settings.dailyCostGoal > 0) {
+          const goalPct = Math.round(
+            (totalCost24h / settings.dailyCostGoal) * 100,
+          );
+          const goalEmoji = goalPct >= 100 ? "🟥" : goalPct >= 75 ? "🟨" : "🟩";
+          goalLine.push(
+            `🎯 Goal: ${formatCost(totalCost24h)}/${formatCost(settings.dailyCostGoal)} ${goalEmoji} ${goalPct}%`,
+          );
+        }
+
         return [
           budgetLine,
           costLine,
           ...cacheLine,
           ...activityLine,
+          ...contextLine,
+          ...goalLine,
           ...pacingLine,
           ...modelLines,
         ].join("\n") as unknown as null;
@@ -249,6 +283,12 @@ export const tui: TuiPlugin = async (api) => {
       lastResponseCost = Math.max(0, totalCost24h - prevTotalCost);
       sessionCostUsd += lastResponseCost;
       sessionCalls++;
+
+      // Track input token deltas for context gauge
+      if (prevInputTokens !== null) {
+        sessionInputTokens += Math.max(0, lastInputTokens24h - prevInputTokens);
+      }
+      prevInputTokens = lastInputTokens24h;
 
       // Dynamic threshold: max($0.10, 1% of daily budget)
       // Use raw budgetFraction to avoid rounding error from budgetPct
@@ -453,6 +493,34 @@ export const tui: TuiPlugin = async (api) => {
             message: `JSON: ${jsonPath}\nCSV: ${csvPath}`,
             variant: "info",
           });
+        },
+      },
+      {
+        title: "Candela: Set Daily Cost Goal",
+        value: "candela.goal",
+        description: "Set a daily cost goal (e.g. /goal 20 = $20/day)",
+        category: "Candela",
+        slash: {
+          name: "goal",
+        },
+        onSelect: async () => {
+          const currentGoal = resolveSettings().dailyCostGoal;
+          if (currentGoal !== null) {
+            api.ui.toast({
+              title: "🎯 Daily Goal",
+              message: `Current goal: ${formatCost(currentGoal)}/day\nSpent today: ${formatCost(totalCost24h)}\n\nTo change: set CANDELA_DAILY_GOAL=<amount>\nTo clear: set CANDELA_DAILY_GOAL=0`,
+              variant: "info",
+            });
+          } else {
+            // Set a default goal based on current usage
+            const suggestedGoal = Math.max(5, Math.ceil(totalCost24h * 1.5));
+            updateDailyCostGoal(suggestedGoal);
+            api.ui.toast({
+              title: "🎯 Goal Set",
+              message: `Daily goal set to ${formatCost(suggestedGoal)}\nBased on current usage: ${formatCost(totalCost24h)}\n\nChange with CANDELA_DAILY_GOAL env var`,
+              variant: "info",
+            });
+          }
         },
       },
     ]);

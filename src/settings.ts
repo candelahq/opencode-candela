@@ -41,6 +41,8 @@ export interface PluginSettings {
   smartRouting: SmartRoutingSettings;
   /** Number of cross-promotion impressions already shown. */
   crossPromoShown: number;
+  /** Daily cost goal in USD. Null means no goal set. */
+  dailyCostGoal: number | null;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -52,6 +54,7 @@ const DEFAULTS: PluginSettings = {
     savingsThreshold: 0.5,
   },
   crossPromoShown: 0,
+  dailyCostGoal: null,
 };
 
 // ── Persisted settings file ───────────────────────────────────────────────────
@@ -67,6 +70,7 @@ interface PersistedSettings {
   version: 1;
   smartRouting?: Partial<SmartRoutingSettings>;
   crossPromoShown?: number;
+  dailyCostGoal?: number | null;
 }
 
 function readPersisted(): PersistedSettings {
@@ -130,6 +134,10 @@ export function resolveSettings(): PluginSettings {
         DEFAULTS.smartRouting.savingsThreshold,
     },
     crossPromoShown: persisted.crossPromoShown ?? DEFAULTS.crossPromoShown,
+    dailyCostGoal:
+      envFloat("CANDELA_DAILY_GOAL", 0, 10000) ??
+      persisted.dailyCostGoal ??
+      DEFAULTS.dailyCostGoal,
   };
 }
 
@@ -182,4 +190,15 @@ export function incrementCrossPromo(): number {
   persisted.crossPromoShown = (persisted.crossPromoShown ?? 0) + 1;
   writePersisted(persisted);
   return persisted.crossPromoShown;
+}
+
+/**
+ * Set or clear the daily cost goal.
+ * Pass null to clear. Persists to disk.
+ */
+export function updateDailyCostGoal(goal: number | null): PluginSettings {
+  const persisted = readPersisted();
+  persisted.dailyCostGoal = goal !== null ? Math.max(0, goal) : null;
+  writePersisted(persisted);
+  return resolveSettings();
 }
