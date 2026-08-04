@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-03
+
+### Fixed
+- **Fetch timeouts** — Added `AbortSignal.timeout(5000)` to 3 HTTP calls that previously had no timeout (`getModelBreakdown`, `tryGetDashboardData`, `legacyFanout`)
+- **Atomic analytics write** — `pruneAnalytics()` now uses `.tmp` + `renameSync` to prevent corruption on crash
+- **AppleScript injection** — Escape backslashes and double quotes in `osascript` notification strings
+- **Notification log fallback** — macOS `osascript` failures now fall through to `client.app.log` instead of being silently swallowed
+- **Platform guard** — `osascript` calls now only run on `process.platform === "darwin"`
+- **Thundering herd** — Context cache refresh uses shared inflight promise to coalesce concurrent cold-start requests
+
+### Changed
+- Extracted `parseUsageSummary()` helper to deduplicate proto3 JSON parsing in `candela-client.ts`
+
+### Added
+- `candela-client.test.ts` — 18 new tests covering HTTP client, proto3 parsing, cache TTL, fallback logic, and model breakdown
+
 ## [0.6.0] - 2026-08-03
 
 ### Added
@@ -72,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Smart model routing suggestions based on budget thresholds
 - Cost-awareness system prompt injection during compaction
 
+[0.7.0]: https://github.com/candelahq/opencode-candela/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/candelahq/opencode-candela/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/candelahq/opencode-candela/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/candelahq/opencode-candela/compare/v0.5.0...v0.5.1
