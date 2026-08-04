@@ -189,11 +189,11 @@ export function createCandelaTools(
         for (const m of models) {
           const costPerCall = m.totalCostUsd / m.requestCount;
           const tokensPerCall = Math.round(
-            (m.inputTokens + m.outputTokens) / m.requestCount,
+            m.totalTokens / m.requestCount,
           );
           const cacheRate =
-            m.inputTokens > 0
-              ? Math.round((m.cacheReadTokens / m.inputTokens) * 100)
+            m.totalTokens > 0
+              ? Math.round((m.cacheReadTokens / m.totalTokens) * 100)
               : 0;
           lines.push(
             `- **${m.model}**: ${formatCost(costPerCall)}/call · ${tokensPerCall.toLocaleString()} tok/call · ${cacheRate}% cache · ${m.requestCount} calls · ${formatCost(m.totalCostUsd)} total`,
