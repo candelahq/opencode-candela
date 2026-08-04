@@ -120,10 +120,10 @@ export function createCandelaTools(
       "Use this when the user asks about costs, spending, usage, or tokens.",
     args: {
       scope: tool.schema
-        .enum(["session", "1h", "24h", "7d", "team", "tools"])
+        .enum(["session", "1h", "24h", "7d", "team", "tools", "efficiency"])
         .default("24h")
         .describe(
-          "Time period to analyze. Use 'session' for current coding session, 'team' for team leaderboard, 'tools' for tool usage telemetry.",
+          "Time period to analyze. Use 'session' for current coding session, 'team' for team leaderboard, 'tools' for tool usage telemetry, 'efficiency' for model efficiency.",
         ),
       model_filter: tool.schema
         .string()
@@ -167,6 +167,52 @@ export function createCandelaTools(
               ? ((count / session.toolCalls) * 100).toFixed(0)
               : "0";
           lines.push(`- **${name}**: ${count} calls (${pct}%) ${bar}`);
+        }
+        return lines.join("\n");
+      }
+
+      if (args.scope === "efficiency") {
+        const data = await candela.getDashboardData(24);
+        if (!data?.models || data.models.length === 0) {
+          return "No model usage data available.";
+        }
+        const models = data.models
+          .filter((m) => m.requestCount > 0)
+          .sort((a, b) => {
+            const aCostPerCall = a.totalCostUsd / a.requestCount;
+            const bCostPerCall = b.totalCostUsd / b.requestCount;
+            return aCostPerCall - bCostPerCall; // cheapest first
+          });
+        if (models.length === 0) return "No model usage data available.";
+
+        const lines = ["## 📊 Model Efficiency (24h)", ""];
+        for (const m of models) {
+          const costPerCall = m.totalCostUsd / m.requestCount;
+          const tokensPerCall = Math.round(
+            (m.inputTokens + m.outputTokens) / m.requestCount,
+          );
+          const cacheRate =
+            m.inputTokens > 0
+              ? Math.round((m.cacheReadTokens / m.inputTokens) * 100)
+              : 0;
+          lines.push(
+            `- **${m.model}**: ${formatCost(costPerCall)}/call · ${tokensPerCall.toLocaleString()} tok/call · ${cacheRate}% cache · ${m.requestCount} calls · ${formatCost(m.totalCostUsd)} total`,
+          );
+        }
+
+        // Add recommendation if there's a big cost gap
+        if (models.length >= 2) {
+          const cheapest = models[0];
+          const priciest = models[models.length - 1];
+          const cheapCPC = cheapest.totalCostUsd / cheapest.requestCount;
+          const priceCPC = priciest.totalCostUsd / priciest.requestCount;
+          if (priceCPC > cheapCPC * 3) {
+            const savings = (priceCPC - cheapCPC) * priciest.requestCount;
+            lines.push("");
+            lines.push(
+              `💡 Switching ${priciest.model} calls to ${cheapest.model} could save ~${formatCost(savings)}/day`,
+            );
+          }
         }
         return lines.join("\n");
       }

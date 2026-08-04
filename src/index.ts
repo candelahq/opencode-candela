@@ -24,8 +24,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 import {
+  detectCostAnomaly,
   getCumulativeCost,
   getSessionCount,
+  readCostStreaks,
   readSpendTrends,
   readWeeklyDigest,
 } from "./analytics-reader.js";
@@ -172,6 +174,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionId: string | null = null;
   let sessionBaseline: { cost: number; tokens: number; calls: number } | null =
     null;
+  let sessionSummaryShown = false;
 
   let activeTaskId: string | null = null;
   let activeSubtaskParent: string | null = null;
@@ -284,6 +287,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
           .properties?.info;
         sessionId = info?.id ?? crypto.randomUUID();
         sessionBaseline = null;
+        sessionSummaryShown = false;
         candela.resetHealth();
         candela.invalidateCache();
         context?.resetSession();
@@ -365,6 +369,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               service: "opencode-candela",
               level: "info",
               message: `${arrow} This week: ${formatCost(digest.thisWeekCost)} (${digest.thisWeekSessions} sessions) vs last week: ${formatCost(digest.lastWeekCost)} — ${direction} ${pct}%`,
+            },
+          });
+        }
+
+        const streaks = readCostStreaks();
+        if (streaks && streaks.currentStreak > 0) {
+          const record =
+            streaks.currentStreak >= streaks.record ? " 🏆 New record!" : "";
+          await client.app.log({
+            body: {
+              service: "opencode-candela",
+              level: "info",
+              message: `🔥 ${streaks.currentStreak}-day streak under ${formatCost(streaks.dailyTarget)}/day!${record}`,
             },
           });
         }
@@ -532,6 +549,25 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               .filter((m) => m.requestCount > 0)
               .map((m) => m.model) ?? [];
 
+          if (
+            !sessionSummaryShown &&
+            sessionToolCalls >= 5 &&
+            sessionDuration > 120
+          ) {
+            sessionSummaryShown = true;
+            const durStr =
+              sessionDuration >= 3600
+                ? `${Math.floor(sessionDuration / 3600)}h ${Math.round((sessionDuration % 3600) / 60)}m`
+                : `${Math.round(sessionDuration / 60)}m`;
+            await client.app.log({
+              body: {
+                service: "opencode-candela",
+                level: "info",
+                message: `📋 Session: ${durStr} · ${formatCost(sessionCost)} · ${sessionToolCalls} tool calls · ${modelsUsed.length} model${modelsUsed.length === 1 ? "" : "s"}`,
+              },
+            });
+          }
+
           logSessionAnalytics({
             ts: new Date().toISOString(),
             sessionId,
@@ -542,6 +578,17 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             pluginVersion: "0.5.0",
             models: modelsUsed,
           });
+
+          const anomaly = detectCostAnomaly(sessionCost);
+          if (anomaly?.isAnomaly) {
+            await client.app.log({
+              body: {
+                service: "opencode-candela",
+                level: "warn",
+                message: `⚠️ This session (${formatCost(sessionCost)}) is ${anomaly.multiplier.toFixed(1)}x your average (${formatCost(anomaly.avgSessionCost)})`,
+              },
+            });
+          }
         }
       }
     },
