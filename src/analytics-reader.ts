@@ -39,20 +39,21 @@ export function pruneAnalytics(): { prunedCount: number; keptCount: number } {
 
   try {
     const stats = statSync(ANALYTICS_PATH);
-    const cutoff = new Date(Date.now() - MAX_AGE_MS).toISOString();
-    const needsPrune = stats.size > MAX_FILE_BYTES;
+    const cutoffMs = Date.now() - MAX_AGE_MS;
 
     const raw = readFileSync(ANALYTICS_PATH, "utf-8");
     const lines = raw.trim().split("\n").filter(Boolean);
 
-    const kept: string[] = [];
+    // First pass: keep only valid, non-expired entries
+    const kept: { line: string; tsMs: number }[] = [];
     let pruned = 0;
 
     for (const line of lines) {
       try {
         const parsed = JSON.parse(line);
-        if (isValidEntry(parsed) && parsed.ts >= cutoff) {
-          kept.push(line);
+        const tsMs = new Date(parsed.ts).getTime();
+        if (isValidEntry(parsed) && Number.isFinite(tsMs) && tsMs >= cutoffMs) {
+          kept.push({ line, tsMs });
         } else {
           pruned++;
         }
@@ -61,8 +62,33 @@ export function pruneAnalytics(): { prunedCount: number; keptCount: number } {
       }
     }
 
-    if (pruned > 0 || needsPrune) {
-      writeFileSync(ANALYTICS_PATH, `${kept.join("\n")}\n`, "utf-8");
+    // Second pass: if still over MAX_FILE_BYTES, evict oldest entries
+    if (stats.size > MAX_FILE_BYTES && kept.length > 0) {
+      // Sort newest-first so we keep the most recent
+      kept.sort((a, b) => b.tsMs - a.tsMs);
+      let totalBytes = 0;
+      let cutIdx = kept.length;
+      for (let i = 0; i < kept.length; i++) {
+        totalBytes += kept[i].line.length + 1; // +1 for newline
+        if (totalBytes > MAX_FILE_BYTES) {
+          cutIdx = i;
+          break;
+        }
+      }
+      if (cutIdx < kept.length) {
+        pruned += kept.length - cutIdx;
+        kept.length = cutIdx;
+      }
+      // Restore chronological order for the file
+      kept.sort((a, b) => a.tsMs - b.tsMs);
+    }
+
+    if (pruned > 0) {
+      writeFileSync(
+        ANALYTICS_PATH,
+        `${kept.map((k) => k.line).join("\n")}\n`,
+        "utf-8",
+      );
     }
 
     return { prunedCount: pruned, keptCount: kept.length };

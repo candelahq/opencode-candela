@@ -276,13 +276,15 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         }
       }
 
+      // Prune old analytics entries (once per process, regardless of Candela)
+      if (event.type === "session.created") {
+        pruneAnalytics();
+      }
+
       if (!alive) return;
 
       // Track session start — use OpenCode's real session ID
       if (event.type === "session.created") {
-        // Prune old analytics entries (once per process)
-        pruneAnalytics();
-
         sessionStartTime = new Date();
         sessionToolCalls = 0;
         sessionToolUsage.clear();
