@@ -1,10 +1,12 @@
 {
   "name": "@candelahq/opencode",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "OpenCode plugin for Candela — conversational cost queries, budget tracking, model configuration, and LLM observability",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check src/",

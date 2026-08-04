@@ -6,6 +6,7 @@ import {
   getSessionCount,
   getSessionHistory,
   getTimeOfDayPatterns,
+  getToolCostBreakdown,
   pruneAnalytics,
   readCostStreaks,
   readSpendTrends,
@@ -515,6 +516,75 @@ describe("analytics-reader", () => {
       expect(patterns?.mostExpensive).toBe("Afternoon");
       expect(patterns?.cheapest).toBe("Morning");
       expect(patterns?.costRatio).toBeGreaterThan(1);
+    });
+  });
+
+  describe("getToolCostBreakdown", () => {
+    it("returns null when no sessions have toolUsage", () => {
+      mockExists.mockReturnValue(true);
+      mockRead.mockReturnValue(makeEntry("2026-08-01", 5.0));
+      expect(getToolCostBreakdown()).toBeNull();
+    });
+
+    it("computes proportional cost allocation", () => {
+      mockExists.mockReturnValue(true);
+      const entry = JSON.stringify({
+        ts: "2026-08-01T12:00:00.000Z",
+        sessionId: "s1",
+        totalCost: 10.0,
+        toolUsage: { file_edit: 6, search: 3, bash: 1 },
+      });
+      mockRead.mockReturnValue(entry);
+      const breakdown = getToolCostBreakdown();
+      expect(breakdown).not.toBeNull();
+      expect(breakdown).toHaveLength(3);
+      // file_edit has 60% of calls → 60% of cost
+      const fileEdit = breakdown?.find((t) => t.tool === "file_edit");
+      expect(fileEdit?.totalCalls).toBe(6);
+      expect(fileEdit?.estimatedTotalCost).toBeCloseTo(6.0);
+      expect(fileEdit?.callShare).toBe(60);
+      // bash has 10% of calls
+      const bash = breakdown?.find((t) => t.tool === "bash");
+      expect(bash?.estimatedTotalCost).toBeCloseTo(1.0);
+    });
+
+    it("sorts by estimated total cost descending", () => {
+      mockExists.mockReturnValue(true);
+      const entry = JSON.stringify({
+        ts: "2026-08-01T12:00:00.000Z",
+        sessionId: "s1",
+        totalCost: 10.0,
+        toolUsage: { cheap_tool: 1, expensive_tool: 9 },
+      });
+      mockRead.mockReturnValue(entry);
+      const breakdown = getToolCostBreakdown();
+      expect(breakdown?.[0].tool).toBe("expensive_tool");
+      expect(breakdown?.[1].tool).toBe("cheap_tool");
+    });
+
+    it("aggregates across multiple sessions", () => {
+      mockExists.mockReturnValue(true);
+      const lines = [
+        JSON.stringify({
+          ts: "2026-08-01T12:00:00.000Z",
+          sessionId: "s1",
+          totalCost: 10.0,
+          toolUsage: { file_edit: 5, search: 5 },
+        }),
+        JSON.stringify({
+          ts: "2026-08-02T12:00:00.000Z",
+          sessionId: "s2",
+          totalCost: 20.0,
+          toolUsage: { file_edit: 8, search: 2 },
+        }),
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+      const breakdown = getToolCostBreakdown();
+      expect(breakdown).not.toBeNull();
+      const fileEdit = breakdown?.find((t) => t.tool === "file_edit");
+      // s1: 5/10 * $10 = $5, s2: 8/10 * $20 = $16 → total = $21
+      expect(fileEdit?.estimatedTotalCost).toBeCloseTo(21.0);
+      expect(fileEdit?.totalCalls).toBe(13);
     });
   });
 });

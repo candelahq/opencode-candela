@@ -598,7 +598,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             toolCalls: sessionToolCalls,
             toolUsage: Object.fromEntries(sessionToolUsage),
             totalCost: sessionCost,
-            pluginVersion: "0.5.0",
+            pluginVersion: "0.6.0",
             models: modelsUsed,
             ...(sessionTag ? { tag: sessionTag } : {}),
             ...(sessionRepo ? { repo: sessionRepo } : {}),

@@ -12,7 +12,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
-import { getSessionHistory, getTimeOfDayPatterns } from "./analytics-reader.js";
+import {
+  getSessionHistory,
+  getTimeOfDayPatterns,
+  getToolCostBreakdown,
+} from "./analytics-reader.js";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
 import {
@@ -776,6 +780,54 @@ export const tui: TuiPlugin = async (api) => {
           api.ui.toast({
             title: "📝 Commit Annotation",
             message: `Saved to ${trailerPath}\n\nUse in commit:\n  git commit -m "feat: ..." -m "${annotation}"\n\nOr add to .gitmessage template`,
+            variant: "info",
+          });
+        },
+      },
+      {
+        title: "Candela: Tool Cost Breakdown",
+        value: "candela.tools",
+        description: "See which tools cost the most across sessions",
+        category: "Candela",
+        slash: {
+          name: "tools",
+          aliases: ["tool-cost"],
+        },
+        onSelect: () => {
+          const breakdown = getToolCostBreakdown(8);
+          if (!breakdown) {
+            api.ui.toast({
+              title: "🛠️ Tool Costs",
+              message:
+                "No tool usage data yet. Costs are tracked after sessions end.",
+              variant: "info",
+            });
+            return;
+          }
+          const lines = breakdown.map(
+            (t) =>
+              `${t.tool}: ~${formatCost(t.estimatedCostPerCall)}/call · ${t.totalCalls} calls · ${t.callShare}% of total`,
+          );
+          const topTool = breakdown[0];
+          const bottomTool = breakdown[breakdown.length - 1];
+          if (
+            breakdown.length >= 2 &&
+            topTool.estimatedCostPerCall > 0 &&
+            bottomTool.estimatedCostPerCall > 0
+          ) {
+            const ratio = Math.round(
+              topTool.estimatedCostPerCall / bottomTool.estimatedCostPerCall,
+            );
+            if (ratio > 1) {
+              lines.push("");
+              lines.push(
+                `💡 ${topTool.tool} costs ~${ratio}x more per call than ${bottomTool.tool}`,
+              );
+            }
+          }
+          api.ui.toast({
+            title: "🛠️ Tool Cost Breakdown",
+            message: lines.join("\n"),
             variant: "info",
           });
         },
