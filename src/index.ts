@@ -503,10 +503,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
           const summary = parts.join(" · ");
 
-          try {
-            await $`osascript -e ${`display notification "${summary}" with title "Candela" subtitle "Session Summary"`}`;
-          } catch {
-            // Non-macOS or notification permission denied — log instead
+          const logSummary = async () => {
             await client.app.log({
               body: {
                 service: "opencode-candela",
@@ -514,6 +511,17 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
                 message: `📊 Session: ${summary}`,
               },
             });
+          };
+
+          if (process.platform === "darwin") {
+            try {
+              const safe = summary.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+              await $`osascript -e ${`display notification "${safe}" with title "Candela" subtitle "Session Summary"`}`;
+            } catch {
+              await logSummary();
+            }
+          } else {
+            await logSummary();
           }
         }
 
@@ -521,9 +529,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         if (data?.budget && data.budget.percentUsed > 90) {
           const b = data.budget;
           const budgetMsg = `${formatCost(b.remainingUsd)} remaining (${b.percentUsed.toFixed(0)}% used)${b.resetLabel ? ` — ${b.resetLabel}` : ""}`;
-          try {
-            await $`osascript -e ${`display notification "${budgetMsg}" with title "Candela" subtitle "⚠️ Budget Warning"`}`;
-          } catch {
+
+          const logBudget = async () => {
             await client.app.log({
               body: {
                 service: "opencode-candela",
@@ -531,6 +538,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
                 message: `⚠️ Budget: ${budgetMsg}`,
               },
             });
+          };
+
+          if (process.platform === "darwin") {
+            try {
+              const safe = budgetMsg
+                .replace(/\\/g, "\\\\")
+                .replace(/"/g, '\\"');
+              await $`osascript -e ${`display notification "${safe}" with title "Candela" subtitle "⚠️ Budget Warning"`}`;
+            } catch {
+              await logBudget();
+            }
+          } else {
+            await logBudget();
           }
         }
 

@@ -9,7 +9,13 @@
  * and the file is capped at MAX_FILE_BYTES (10 MB).
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -84,11 +90,9 @@ export function pruneAnalytics(): { prunedCount: number; keptCount: number } {
     }
 
     if (pruned > 0) {
-      writeFileSync(
-        ANALYTICS_PATH,
-        `${kept.map((k) => k.line).join("\n")}\n`,
-        "utf-8",
-      );
+      const tmp = `${ANALYTICS_PATH}.tmp.${process.pid}`;
+      writeFileSync(tmp, `${kept.map((k) => k.line).join("\n")}\n`, "utf-8");
+      renameSync(tmp, ANALYTICS_PATH);
     }
 
     return { prunedCount: pruned, keptCount: kept.length };
