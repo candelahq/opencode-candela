@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { humanName, inferProvider } from "../config-tools.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CandelaClient } from "../candela-client.js";
+import {
+  createConfigTools,
+  humanName,
+  inferProvider,
+} from "../config-tools.js";
 
 // ── inferProvider ─────────────────────────────────────────────────────────────
 
@@ -78,5 +83,142 @@ describe("humanName", () => {
 
   it("handles single word models", () => {
     expect(humanName("o3")).toBe("O3");
+  });
+});
+
+// ── candela_configure_model (browse & list) ─────────────────────────────────
+
+describe("candela_configure_model (list/browse)", () => {
+  const CANDELA_URL = "http://localhost:4100";
+
+  function makeMockClient() {
+    return {
+      getDashboardData: vi.fn().mockResolvedValue(null),
+    } as unknown as CandelaClient;
+  }
+
+  function makeMockOpenCodeClient(configData: Record<string, unknown> = {}) {
+    return {
+      config: {
+        get: vi.fn().mockResolvedValue({ data: configData }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+    } as unknown as Parameters<typeof createConfigTools>[2];
+  }
+
+  function makeContext() {
+    return {
+      sessionID: "test",
+      messageID: "test",
+      agent: "test",
+      directory: "/tmp",
+      worktree: "/tmp",
+      abort: new AbortController().signal,
+      metadata: vi.fn(),
+      ask: vi.fn(),
+    };
+  }
+
+  function model(overrides: Record<string, unknown> = {}) {
+    return {
+      modelId: overrides.modelId ?? "claude-sonnet-4",
+      provider: overrides.provider ?? "anthropic",
+      displayName: overrides.displayName ?? "Claude Sonnet 4",
+      inputPerMillion: overrides.inputPerMillion ?? 3.0,
+      outputPerMillion: overrides.outputPerMillion ?? 15.0,
+      contextWindow: overrides.contextWindow ?? 200000,
+      category: overrides.category ?? "chat",
+      enabled: overrides.enabled ?? true,
+      inputPerMillionHigh: overrides.inputPerMillionHigh ?? 0,
+      outputPerMillionHigh: overrides.outputPerMillionHigh ?? 0,
+      tierThresholdTokens: overrides.tierThresholdTokens ?? 0,
+    };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe("action: browse", () => {
+    function catalogTools(entries: ReturnType<typeof model>[] | null) {
+      const client = makeMockClient();
+      (client as unknown as Record<string, unknown>).getModelCatalog = vi
+        .fn()
+        .mockResolvedValue(entries);
+      const opencodeClient = makeMockOpenCodeClient();
+      return createConfigTools(client, CANDELA_URL, opencodeClient);
+    }
+
+    it("returns 'Catalog Unavailable' when Candela is down", async () => {
+      const tools = catalogTools(null);
+      const result = (await tools.candela_configure_model.execute(
+        { action: "browse" },
+        makeContext() as unknown as Parameters<
+          typeof tools.candela_configure_model.execute
+        >[1],
+      )) as { title: string; output: string };
+      expect(result.title).toBe("Catalog Unavailable");
+    });
+
+    it("shows all models sorted by price (default)", async () => {
+      const tools = catalogTools([
+        model({ modelId: "gpt-4o", provider: "openai", inputPerMillion: 5 }),
+        model({
+          modelId: "gemini-2.5-flash",
+          provider: "google",
+          inputPerMillion: 0.15,
+          contextWindow: 1000000,
+        }),
+      ]);
+      const result = (await tools.candela_configure_model.execute(
+        { action: "browse" },
+        makeContext() as unknown as Parameters<
+          typeof tools.candela_configure_model.execute
+        >[1],
+      )) as { title: string; output: string };
+
+      expect(result.title).toBe("Catalog: 2 models");
+      expect(result.output).toContain("gemini-2.5-flash"); // cheapest first
+    });
+  });
+
+  describe("action: list", () => {
+    it("returns 'No Models Configured' when empty", async () => {
+      const client = makeMockClient();
+      const opencodeClient = makeMockOpenCodeClient({});
+      const tools = createConfigTools(client, CANDELA_URL, opencodeClient);
+
+      const result = (await tools.candela_configure_model.execute(
+        { action: "list" },
+        makeContext() as unknown as Parameters<
+          typeof tools.candela_configure_model.execute
+        >[1],
+      )) as { title: string; output: string };
+
+      expect(result.title).toBe("No Models Configured");
+    });
+
+    it("lists configured models", async () => {
+      const client = makeMockClient();
+      const opencodeClient = makeMockOpenCodeClient({
+        provider: {
+          "candela-anthropic": {
+            models: { "claude-sonnet-4": { name: "Claude Sonnet 4" } },
+          },
+        },
+      });
+      const tools = createConfigTools(client, CANDELA_URL, opencodeClient);
+
+      const result = (await tools.candela_configure_model.execute(
+        { action: "list" },
+        makeContext() as unknown as Parameters<
+          typeof tools.candela_configure_model.execute
+        >[1],
+      )) as { title: string; output: string };
+
+      expect(result.title).toContain("1 models (1 via Candela)");
+      expect(result.output).toContain("claude-sonnet-4");
+      expect(result.output).toContain("candela-anthropic");
+    });
   });
 });

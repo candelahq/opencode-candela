@@ -2,8 +2,7 @@
  * Candela config management tools for OpenCode.
  *
  * These tools let the AI agent manage OpenCode's configuration:
- * - candela_configure_model: Add/update/remove models routed through Candela
- * - candela_list_models: Show configured models with Candela cost enrichment
+ * - candela_configure_model: Manage models (add, remove, set default, list, browse catalog)
  *
  * Uses the OpenCode SDK config API (client.config.get/update) instead of
  * raw file I/O. Changes are applied live — no restart needed.
@@ -103,30 +102,214 @@ export function createConfigTools(
       "Example: 'add claude sonnet 4 through candela' or 'remove gpt-4o'.",
     args: {
       action: tool.schema
-        .enum(["add", "remove", "set-default"])
+        .enum(["add", "remove", "set-default", "list", "browse"])
         .describe(
-          "Action to perform: add a model, remove it, or set it as the default model.",
+          "Action to perform: add a model, remove it, set it as default, list configured models, or browse the catalog.",
         ),
       model_id: tool.schema
         .string()
+        .optional()
         .describe(
-          "Model ID (e.g. 'claude-sonnet-4', 'gpt-4.1', 'gemini-3.5-flash').",
+          "Model ID (e.g. 'claude-sonnet-4'). Required for add, remove, and set-default.",
         ),
       provider: tool.schema
         .string()
         .optional()
-        .describe(
-          "Provider name (e.g. 'anthropic', 'openai', 'gemini'). " +
-            "Auto-detected from model name if omitted.",
-        ),
+        .describe("Provider name (e.g. 'anthropic'). Used in add/browse."),
       display_name: tool.schema
         .string()
         .optional()
         .describe(
-          "Human-readable name for the model. Auto-generated if omitted.",
+          "Human-readable name for the model. Auto-generated if omitted (used in add).",
+        ),
+      show_usage: tool.schema
+        .boolean()
+        .optional()
+        .describe(
+          "If true, also show recent usage/cost data per model from Candela (used in list).",
+        ),
+      category: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Filter by category (e.g. 'chat', 'code', 'reasoning') (used in browse).",
+        ),
+      sort_by: tool.schema
+        .enum(["price", "context", "name"])
+        .optional()
+        .describe(
+          "Sort order: 'price' (cheapest first), 'context' (largest first), 'name' (alphabetical). Default: price (used in browse).",
         ),
     },
     async execute(args) {
+      if (args.action === "browse") {
+        let entries = await candela.getModelCatalog();
+        if (!entries) {
+          return {
+            title: "Catalog Unavailable",
+            output:
+              "Could not fetch the model catalog. Make sure Candela is running.",
+          };
+        }
+
+        if (entries.length === 0) {
+          return {
+            title: "Empty Catalog",
+            output: "The model catalog is empty. No models are configured.",
+          };
+        }
+
+        // Apply filters
+        if (args.provider) {
+          const p = args.provider.toLowerCase();
+          entries = entries.filter((e) => e.provider.toLowerCase().includes(p));
+        }
+        if (args.category) {
+          const c = args.category.toLowerCase();
+          entries = entries.filter((e) => e.category.toLowerCase().includes(c));
+        }
+
+        if (entries.length === 0) {
+          return {
+            title: "No Matching Models",
+            output: "No models match the specified filters.",
+          };
+        }
+
+        // Sort
+        const sortBy = args.sort_by ?? "price";
+        if (sortBy === "price") {
+          entries.sort((a, b) => a.inputPerMillion - b.inputPerMillion);
+        } else if (sortBy === "context") {
+          entries.sort((a, b) => b.contextWindow - a.contextWindow);
+        } else {
+          entries.sort((a, b) => a.modelId.localeCompare(b.modelId));
+        }
+
+        const formatCtx = (tokens: number): string => {
+          if (tokens === 0) return "—";
+          if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+          return `${(tokens / 1000).toFixed(0)}K`;
+        };
+
+        const formatPrice = (price: number): string => {
+          if (price === 0) return "free";
+          if (price < 0.01) return `$${price.toFixed(4)}`;
+          return `$${price.toFixed(2)}`;
+        };
+
+        const lines: string[] = [
+          `## Model Catalog (${entries.length} models)`,
+          "",
+          "| Model | Provider | Input/1M | Output/1M | Context | Category |",
+          "|-------|----------|----------|-----------|---------|----------|",
+        ];
+
+        for (const e of entries) {
+          let inputPrice = formatPrice(e.inputPerMillion);
+          if (e.inputPerMillionHigh > 0 && e.tierThresholdTokens > 0) {
+            inputPrice += ` (>${formatCtx(e.tierThresholdTokens)}: ${formatPrice(e.inputPerMillionHigh)})`;
+          }
+          lines.push(
+            `| ${e.modelId} | ${e.provider} | ${inputPrice} | ${formatPrice(e.outputPerMillion)} | ${formatCtx(e.contextWindow)} | ${e.category || "—"} |`,
+          );
+        }
+
+        return {
+          title: `Catalog: ${entries.length} models`,
+          output: lines.join("\n"),
+        };
+      }
+
+      if (args.action === "list") {
+        // Read config via SDK — returns merged project + global config
+        const { data: config } = await client.config.get();
+        if (!config) {
+          return {
+            title: "Config Error",
+            output: "Failed to read OpenCode config via SDK.",
+          };
+        }
+
+        const allProviders = config.provider ?? {};
+
+        if (Object.keys(allProviders).length === 0) {
+          return {
+            title: "No Models Configured",
+            output:
+              "No providers configured in OpenCode. " +
+              'Use `candela_configure_model` to add a model (e.g. "add claude sonnet 4").',
+          };
+        }
+
+        // Get usage data if requested
+        let modelUsage: Map<string, { cost: number; calls: number }> | null =
+          null;
+        if (args.show_usage) {
+          const data = await candela.getDashboardData(24);
+          if (data?.models) {
+            modelUsage = new Map();
+            for (const m of data.models) {
+              modelUsage.set(m.model, {
+                cost: m.totalCostUsd,
+                calls: m.requestCount,
+              });
+            }
+          }
+        }
+
+        const lines: string[] = ["## Configured Models", ""];
+
+        const usageHeader = args.show_usage ? " Cost (24h) | Calls |" : "";
+        const usageSep = args.show_usage ? "------------|-------|" : "";
+        lines.push(
+          `| Provider | Model | Name | Via Candela |${usageHeader}`,
+          `|----------|-------|------|-------------|${usageSep}`,
+        );
+
+        let totalModels = 0;
+        let candelaModels = 0;
+
+        for (const [providerKey, provider] of Object.entries(allProviders)) {
+          const isCandela = providerKey.startsWith("candela-");
+          const models = provider.models ?? {};
+
+          for (const [modelId, modelConfig] of Object.entries(models)) {
+            totalModels++;
+            if (isCandela) candelaModels++;
+
+            let usageCols = "";
+            if (args.show_usage) {
+              const usage = modelUsage?.get(modelId);
+              usageCols = usage
+                ? ` ${formatCost(usage.cost)} | ${usage.calls} |`
+                : " — | — |";
+            }
+
+            lines.push(
+              `| ${providerKey} | \`${modelId}\` | ${modelConfig.name ?? "—"} | ${isCandela ? "✅" : "❌"} |${usageCols}`,
+            );
+          }
+        }
+
+        lines.push(
+          "",
+          `**${totalModels} models** configured (${candelaModels} via Candela proxy).`,
+        );
+
+        return {
+          title: `${totalModels} models (${candelaModels} via Candela)`,
+          output: lines.join("\n"),
+        };
+      }
+
+      if (!args.model_id) {
+        return {
+          title: "Missing Argument",
+          output:
+            "model_id is required for add, remove, and set-default actions.",
+        };
+      }
       // Resolve provider and route
       const rawProvider = args.provider ?? inferProvider(args.model_id);
       if (!rawProvider) {
@@ -266,106 +449,7 @@ export function createConfigTools(
     },
   });
 
-  // ── candela_list_models ──────────────────────────────────────────────
-
-  const listModels = tool({
-    description:
-      "List all models configured in OpenCode, showing which ones are routed through Candela. " +
-      "Enriches with cost data from Candela if available. " +
-      "Use when the user asks 'what models do I have?' or 'which models are available?'.",
-    args: {
-      show_usage: tool.schema
-        .boolean()
-        .default(false)
-        .describe(
-          "If true, also show recent usage/cost data per model from Candela.",
-        ),
-    },
-    async execute(args) {
-      // Read config via SDK — returns merged project + global config
-      const { data: config } = await client.config.get();
-      if (!config) {
-        return {
-          title: "Config Error",
-          output: "Failed to read OpenCode config via SDK.",
-        };
-      }
-
-      const allProviders = config.provider ?? {};
-
-      if (Object.keys(allProviders).length === 0) {
-        return {
-          title: "No Models Configured",
-          output:
-            "No providers configured in OpenCode. " +
-            'Use `candela_configure_model` to add a model (e.g. "add claude sonnet 4").',
-        };
-      }
-
-      // Get usage data if requested
-      let modelUsage: Map<string, { cost: number; calls: number }> | null =
-        null;
-      if (args.show_usage) {
-        const data = await candela.getDashboardData(24);
-        if (data?.models) {
-          modelUsage = new Map();
-          for (const m of data.models) {
-            modelUsage.set(m.model, {
-              cost: m.totalCostUsd,
-              calls: m.requestCount,
-            });
-          }
-        }
-      }
-
-      const lines: string[] = ["## Configured Models", ""];
-
-      const usageHeader = args.show_usage ? " Cost (24h) | Calls |" : "";
-      const usageSep = args.show_usage ? "------------|-------|" : "";
-      lines.push(
-        `| Provider | Model | Name | Via Candela |${usageHeader}`,
-        `|----------|-------|------|-------------|${usageSep}`,
-      );
-
-      let totalModels = 0;
-      let candelaModels = 0;
-
-      for (const [providerKey, provider] of Object.entries(allProviders)) {
-        const isCandela = providerKey.startsWith("candela-");
-        const models = provider.models ?? {};
-
-        for (const [modelId, modelConfig] of Object.entries(models)) {
-          totalModels++;
-          if (isCandela) candelaModels++;
-
-          let usageCols = "";
-          if (args.show_usage) {
-            const usage = modelUsage?.get(modelId);
-            usageCols = usage
-              ? ` ${formatCost(usage.cost)} | ${usage.calls} |`
-              : " — | — |";
-          }
-
-          lines.push(
-            `| ${providerKey} | \`${modelId}\` | ${modelConfig.name ?? "—"} | ${isCandela ? "✅" : "❌"} |${usageCols}`,
-          );
-        }
-      }
-
-      lines.push(
-        "",
-        `**${totalModels} models** configured (${candelaModels} via Candela proxy).`,
-      );
-
-      return {
-        title: `${totalModels} models (${candelaModels} via Candela)`,
-        output: lines.join("\n"),
-      };
-    },
-  });
-
   return {
     candela_configure_model: configureModel,
-    candela_list_models: listModels,
   };
 }
