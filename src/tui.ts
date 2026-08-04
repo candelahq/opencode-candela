@@ -12,6 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
+import { getSessionHistory, getTimeOfDayPatterns } from "./analytics-reader.js";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
 import {
@@ -667,6 +668,116 @@ export const tui: TuiPlugin = async (api) => {
               variant: "info",
             });
           }
+        },
+      },
+      {
+        title: "Candela: Session History",
+        value: "candela.history",
+        description: "Browse recent sessions with cost, duration, and models",
+        category: "Candela",
+        slash: {
+          name: "history",
+          aliases: ["sessions"],
+        },
+        onSelect: () => {
+          const sessions = getSessionHistory(10);
+          if (sessions.length === 0) {
+            api.ui.toast({
+              title: "📜 History",
+              message: "No session history yet.",
+              variant: "info",
+            });
+            return;
+          }
+          const lines = sessions.map((s) => {
+            const date = new Date(s.ts);
+            const dateStr = date.toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+            });
+            const timeStr = date.toLocaleTimeString("en-US", {
+              hour: "numeric",
+              minute: "2-digit",
+            });
+            const dur = s.duration ? `${Math.round(s.duration / 60)}m` : "?m";
+            const tag = s.tag ? ` 🏷️${s.tag}` : "";
+            const repo = s.repo ? ` 📂${s.repo}` : "";
+            return `${dateStr} ${timeStr} · ${formatCost(s.totalCost)} · ${dur} · ${s.toolCalls ?? "?"} calls${tag}${repo}`;
+          });
+          api.ui.toast({
+            title: `📜 Last ${sessions.length} Sessions`,
+            message: lines.join("\n"),
+            variant: "info",
+          });
+        },
+      },
+      {
+        title: "Candela: Time-of-Day Patterns",
+        value: "candela.patterns",
+        description: "See when you spend the most/least on AI",
+        category: "Candela",
+        slash: {
+          name: "patterns",
+          aliases: ["when"],
+        },
+        onSelect: () => {
+          const patterns = getTimeOfDayPatterns();
+          if (!patterns) {
+            api.ui.toast({
+              title: "⏰ Time Patterns",
+              message: "Need at least 5 sessions for patterns.",
+              variant: "info",
+            });
+            return;
+          }
+          const lines = patterns.buckets
+            .filter((b) => b.sessionCount > 0)
+            .map(
+              (b) =>
+                `${b.name} (${b.hours}): avg ${formatCost(b.avgCost)}/session · ${b.sessionCount} sessions`,
+            );
+          lines.push("");
+          if (patterns.costRatio > 1.5) {
+            lines.push(
+              `💡 Your ${patterns.mostExpensive.toLowerCase()} sessions cost ${patterns.costRatio}x more than ${patterns.cheapest.toLowerCase()}`,
+            );
+          } else {
+            lines.push("💡 Your costs are fairly consistent across the day");
+          }
+          api.ui.toast({
+            title: "⏰ Time-of-Day Patterns",
+            message: lines.join("\n"),
+            variant: "info",
+          });
+        },
+      },
+      {
+        title: "Candela: Annotate Git Commit",
+        value: "candela.annotate",
+        description: "Copy session cost metadata for your next git commit",
+        category: "Candela",
+        slash: {
+          name: "annotate",
+          aliases: ["commit-cost"],
+        },
+        onSelect: () => {
+          const annotation = `Cost: ${formatCost(sessionCostUsd)} | Calls: ${sessionCalls} | Budget: ${budgetPct ?? "?"}%`;
+          // Write to a temp file that can be used with git commit --trailer
+          const trailerPath = join(
+            homedir(),
+            ".config",
+            "opencode",
+            "candela-commit-trailer.txt",
+          );
+          mkdirSync(join(homedir(), ".config", "opencode"), {
+            recursive: true,
+          });
+          writeFileSync(trailerPath, annotation, "utf-8");
+          api.ui.toast({
+            title: "📝 Commit Annotation",
+            message: `Saved to ${trailerPath}\n\nUse in commit:\n  git commit -m "feat: ..." -m "${annotation}"\n\nOr add to .gitmessage template`,
+            variant: "info",
+          });
         },
       },
     ]);

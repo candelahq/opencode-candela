@@ -19,6 +19,7 @@
 // Re-export TUI plugin for OpenCode to discover
 export { tui } from "./tui.js";
 
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -71,6 +72,7 @@ interface SessionAnalyticsEntry {
   pluginVersion: string;
   models: string[];
   tag?: string;
+  repo?: string;
 }
 
 /** Append a session analytics entry to the local JSONL file. */
@@ -177,6 +179,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   let sessionBaseline: { cost: number; tokens: number; calls: number } | null =
     null;
   let sessionSummaryShown = false;
+  let sessionRepo: string | null = null;
 
   let activeTaskId: string | null = null;
   let activeSubtaskParent: string | null = null;
@@ -298,6 +301,18 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         candela.resetHealth();
         candela.invalidateCache();
         context?.resetSession();
+
+        // Detect current git repo for cost attribution
+        try {
+          const repoPath = execFileSync(
+            "git",
+            ["rev-parse", "--show-toplevel"],
+            { encoding: "utf-8", timeout: 2000 },
+          ).trim();
+          sessionRepo = repoPath.split("/").pop() ?? null;
+        } catch {
+          sessionRepo = null;
+        }
 
         // Capture baseline metrics at session start for accurate delta.
         // Awaited to prevent race where session.idle fires before baseline is set.
@@ -586,6 +601,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             pluginVersion: "0.5.0",
             models: modelsUsed,
             ...(sessionTag ? { tag: sessionTag } : {}),
+            ...(sessionRepo ? { repo: sessionRepo } : {}),
           });
 
           const anomaly = detectCostAnomaly(sessionCost);
