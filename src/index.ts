@@ -126,7 +126,10 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
     // Enrich connect message with model count
     const modelCount = data?.models?.length ?? 0;
-    const modelSuffix = modelCount > 0 ? ` — ${modelCount} models active` : "";
+    const modelSuffix =
+      modelCount > 0
+        ? ` — ${modelCount} ${modelCount === 1 ? "model" : "models"} active`
+        : "";
     const connectMsg = `Connected to Candela at ${sanitizeUrl(candelaUrl)}${modelSuffix}`;
     await client.app.log({
       body: {
@@ -175,11 +178,12 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   }
 
   // ── No-models detection: Candela running but no routed models ──────────
+  let hasCandelaProvider = true; // default true so welcome message is optimistic if check fails
   if (alive) {
     try {
       const { data: config } = await client.config.get();
       const providers = config?.provider ?? {};
-      const hasCandelaProvider = Object.keys(providers).some((k) =>
+      hasCandelaProvider = Object.keys(providers).some((k) =>
         k.startsWith("candela-"),
       );
       if (!hasCandelaProvider) {
@@ -190,7 +194,7 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             message:
               "⚠️ No models routed through Candela yet.\n" +
               '   Ask the AI: "add claude sonnet 4 through candela"\n' +
-              "   Or use /models to browse and add models.",
+              "   Or run: opencode plugin @candelahq/opencode",
           },
         });
       }
@@ -369,18 +373,20 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
         // ── First-use onboarding: Candela is running ────────────────────
         if (isFirstEverSession()) {
+          const trackingLine = hasCandelaProvider
+            ? "🕯️ Welcome to Candela! Every AI request is now tracked.\n"
+            : "🕯️ Welcome to Candela! Route models through Candela to start tracking.\n";
           await client.app.log({
             body: {
               service: "opencode-candela",
               level: "info",
               message:
-                "🕯️ Welcome to Candela! Every AI request is now tracked.\n" +
+                trackingLine +
                 "\n" +
                 "   Quick start:\n" +
                 '   • Ask "how much have I spent today?" — the AI knows your costs\n' +
                 "   • /cost — instant cost breakdown\n" +
                 "   • /budget — check remaining budget\n" +
-                "   • /models — see which models you're using\n" +
                 "\n" +
                 "   💡 Set CANDELA_SMART_ROUTING=true for cost-saving model suggestions",
             },
