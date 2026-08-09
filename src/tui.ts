@@ -636,7 +636,7 @@ export const tui: TuiPlugin = async (api) => {
             updateSessionTag(branchTag);
             api.ui.toast({
               title: "🏷️ Tagged",
-              message: `Session tagged: "${branchTag}"\nChange with CANDELA_SESSION_TAG env var\nRun /tag again to clear`,
+              message: `Session tagged: "${branchTag}"\nRun /tag again to clear`,
               variant: "info",
             });
           }
