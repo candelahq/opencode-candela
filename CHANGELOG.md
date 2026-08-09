@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-08-09
+
+### Added
+- **Onboarding improvements** — Better first-run experience for new users
+  - Connect message shows model count ("Connected — 12 models active")
+  - Rich first-session welcome with slash command quick start
+  - No-models detection nudges users to route models through Candela
+
+### Fixed
+- `CANDELA_URL` → `CANDELA_PROXY_URL` in onboarding message
+- Removed stale `CANDELA_SESSION_TAG` reference from `/tag` output
+
 ## [0.8.0] - 2026-08-03
 
 ### Changed
