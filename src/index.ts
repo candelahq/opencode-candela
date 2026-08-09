@@ -124,7 +124,10 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     // Single call to get usage + budget + grants
     const data = await candela.getDashboardData(24);
 
-    const connectMsg = `Connected to Candela at ${sanitizeUrl(candelaUrl)}`;
+    // Enrich connect message with model count
+    const modelCount = data?.models?.length ?? 0;
+    const modelSuffix = modelCount > 0 ? ` — ${modelCount} models active` : "";
+    const connectMsg = `Connected to Candela at ${sanitizeUrl(candelaUrl)}${modelSuffix}`;
     await client.app.log({
       body: {
         service: "opencode-candela",
@@ -165,10 +168,35 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         level: "info",
         message:
           "🕯️ Candela can track your AI spend in real-time.\n" +
-          `   Run \`candela start\` or set CANDELA_URL to connect.\n` +
+          `   Run \`candela start\` or set CANDELA_PROXY_URL to connect.\n` +
           `   Tried: ${sanitizeUrl(candelaUrl)}`,
       },
     });
+  }
+
+  // ── No-models detection: Candela running but no routed models ──────────
+  if (alive) {
+    try {
+      const { data: config } = await client.config.get();
+      const providers = config?.provider ?? {};
+      const hasCandelaProvider = Object.keys(providers).some((k) =>
+        k.startsWith("candela-"),
+      );
+      if (!hasCandelaProvider) {
+        await client.app.log({
+          body: {
+            service: "opencode-candela",
+            level: "warn",
+            message:
+              "⚠️ No models routed through Candela yet.\n" +
+              '   Ask the AI: "add claude sonnet 4 through candela"\n' +
+              "   Or use /models to browse and add models.",
+          },
+        });
+      }
+    } catch {
+      // Non-fatal — skip detection if config read fails
+    }
   }
 
   // Track per-session state
@@ -346,9 +374,15 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
               service: "opencode-candela",
               level: "info",
               message:
-                "🕯️ Candela is tracking costs for this session.\n" +
-                '   Try: "how much have I spent?" or /cost\n' +
-                "   Smart routing: set CANDELA_SMART_ROUTING=true",
+                "🕯️ Welcome to Candela! Every AI request is now tracked.\n" +
+                "\n" +
+                "   Quick start:\n" +
+                '   • Ask "how much have I spent today?" — the AI knows your costs\n' +
+                "   • /cost — instant cost breakdown\n" +
+                "   • /budget — check remaining budget\n" +
+                "   • /models — see which models you're using\n" +
+                "\n" +
+                "   💡 Set CANDELA_SMART_ROUTING=true for cost-saving model suggestions",
             },
           });
         }
