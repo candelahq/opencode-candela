@@ -73,6 +73,8 @@ interface SessionAnalyticsEntry {
   models: string[];
   tag?: string;
   repo?: string;
+  branch?: string;
+  commit?: string;
 }
 
 /** Append a session analytics entry to the local JSONL file. */
@@ -212,6 +214,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
     null;
   let sessionSummaryShown = false;
   let sessionRepo: string | null = null;
+  let sessionBranch: string | null = null;
+  let sessionCommit: string | null = null;
 
   let activeTaskId: string | null = null;
   let activeSubtaskParent: string | null = null;
@@ -274,6 +278,19 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         // base64 encode or safe-encode the title if needed, but assuming headers can take it
         output.headers["X-Subtask-Title"] = activeSubtaskTitle;
       }
+      if (sessionRepo) {
+        output.headers["X-Git-Repo"] = sessionRepo;
+      }
+      if (sessionBranch) {
+        output.headers["X-Git-Branch"] = sessionBranch;
+      }
+      if (sessionCommit) {
+        output.headers["X-Git-Commit"] = sessionCommit;
+      }
+      const tag = resolveSettings().sessionTag;
+      if (tag) {
+        output.headers["X-Session-Tag"] = tag;
+      }
     },
 
     /**
@@ -334,16 +351,30 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
         candela.invalidateCache();
         context?.resetSession();
 
-        // Detect current git repo for cost attribution
+        // Detect current git repo + branch for cost attribution
         try {
           const repoPath = execFileSync(
             "git",
             ["rev-parse", "--show-toplevel"],
             { encoding: "utf-8", timeout: 2000 },
           ).trim();
+          const rawBranch = execFileSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { encoding: "utf-8", timeout: 2000 },
+          ).trim();
+          // In detached HEAD state, rev-parse returns literal "HEAD"
+          sessionBranch = rawBranch && rawBranch !== "HEAD" ? rawBranch : null;
           sessionRepo = repoPath.split("/").pop() ?? null;
+          sessionCommit =
+            execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+              encoding: "utf-8",
+              timeout: 2000,
+            }).trim() || null;
         } catch {
           sessionRepo = null;
+          sessionBranch = null;
+          sessionCommit = null;
         }
 
         // Capture baseline metrics at session start for accurate delta.
@@ -662,6 +693,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
             models: modelsUsed,
             ...(sessionTag ? { tag: sessionTag } : {}),
             ...(sessionRepo ? { repo: sessionRepo } : {}),
+            ...(sessionBranch ? { branch: sessionBranch } : {}),
+            ...(sessionCommit ? { commit: sessionCommit } : {}),
           });
 
           const anomaly = detectCostAnomaly(sessionCost);
