@@ -265,8 +265,46 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       }
     },
 
-    "chat.headers": async (_input, output) => {
+    "chat.headers": async (input, output) => {
       if (!alive || !sessionId) return;
+
+      // Only attach Candela tracing headers when routing through the Candela proxy.
+      // Prevents leaking internal mission, job, task, and git details to direct third-party providers (CWE-200).
+      const provider = (input as any)?.provider;
+      const model = (input as any)?.model;
+      if (provider || model) {
+        const providerId =
+          typeof provider === "string"
+            ? provider
+            : provider?.id || provider?.info?.id || provider?.name;
+        const baseURL =
+          provider?.baseURL ||
+          provider?.baseUrl ||
+          provider?.options?.baseURL ||
+          provider?.info?.baseURL;
+        const modelProvider =
+          typeof model === "object"
+            ? model?.providerID || model?.provider
+            : undefined;
+        const modelId =
+          typeof model === "string" ? model : model?.id || model?.modelID;
+
+        const isCandela =
+          (typeof providerId === "string" &&
+            (providerId.startsWith("candela-") ||
+              providerId.includes("candela"))) ||
+          (typeof baseURL === "string" && baseURL.includes(candelaUrl)) ||
+          (typeof modelProvider === "string" &&
+            (modelProvider.startsWith("candela-") ||
+              modelProvider.includes("candela"))) ||
+          (typeof modelId === "string" &&
+            (modelId.startsWith("candela-") || modelId.includes("candela/")));
+
+        if (!isCandela) {
+          return;
+        }
+      }
+
       output.headers["X-Session-Id"] = sessionId;
       if (activeTaskId) {
         output.headers["X-Task-Id"] = activeTaskId;
