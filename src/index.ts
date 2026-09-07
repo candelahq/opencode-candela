@@ -291,6 +291,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       if (tag) {
         output.headers["X-Session-Tag"] = tag;
       }
+      const missionId = process.env.CANDELA_MISSION_ID;
+      if (missionId) {
+        output.headers["X-Mission-Id"] = missionId;
+        output.headers["X-Candela-Job-Id"] = missionId;
+      }
     },
 
     /**
