@@ -116,6 +116,75 @@ function formatGrant(g: GrantInfo): string {
   return parts.join("");
 }
 
+/**
+ * Determine whether an outgoing LLM request targets a Candela provider or proxy.
+ * Prevents leaking internal mission, job, task, and git details to direct third-party providers (CWE-200).
+ */
+export function isCandelaRequest(
+  input:
+    | {
+        provider?:
+          | string
+          | {
+              id?: string;
+              name?: string;
+              baseURL?: string;
+              baseUrl?: string;
+              options?: { baseURL?: string };
+              info?: { id?: string; baseURL?: string };
+            };
+        model?:
+          | string
+          | {
+              id?: string;
+              modelID?: string;
+              provider?: string;
+              providerID?: string;
+            };
+      }
+    | null
+    | undefined,
+  candelaUrl: string,
+): boolean {
+  if (!input) return false;
+  const provider = input.provider;
+  const model = input.model;
+  if (!provider && !model) return false;
+
+  const providerId =
+    typeof provider === "string"
+      ? provider
+      : provider?.id || provider?.info?.id || provider?.name;
+  const baseURL =
+    typeof provider === "object" && provider !== null
+      ? provider.baseURL ||
+        provider.baseUrl ||
+        provider.options?.baseURL ||
+        provider.info?.baseURL
+      : undefined;
+  const modelProvider =
+    typeof model === "object" && model !== null
+      ? model.providerID || model.provider
+      : undefined;
+  const modelId =
+    typeof model === "string"
+      ? model
+      : typeof model === "object" && model !== null
+        ? model.id || model.modelID
+        : undefined;
+
+  return Boolean(
+    (typeof providerId === "string" &&
+      (providerId.startsWith("candela-") || providerId.includes("candela"))) ||
+      (typeof baseURL === "string" && baseURL.includes(candelaUrl)) ||
+      (typeof modelProvider === "string" &&
+        (modelProvider.startsWith("candela-") ||
+          modelProvider.includes("candela"))) ||
+      (typeof modelId === "string" &&
+        (modelId.startsWith("candela-") || modelId.includes("candela/"))),
+  );
+}
+
 export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const candelaUrl = discoverCandelaUrl();
   const candela = new CandelaClient(candelaUrl);
@@ -270,39 +339,8 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
 
       // Only attach Candela tracing headers when routing through the Candela proxy.
       // Prevents leaking internal mission, job, task, and git details to direct third-party providers (CWE-200).
-      const provider = (input as any)?.provider;
-      const model = (input as any)?.model;
-      if (provider || model) {
-        const providerId =
-          typeof provider === "string"
-            ? provider
-            : provider?.id || provider?.info?.id || provider?.name;
-        const baseURL =
-          provider?.baseURL ||
-          provider?.baseUrl ||
-          provider?.options?.baseURL ||
-          provider?.info?.baseURL;
-        const modelProvider =
-          typeof model === "object"
-            ? model?.providerID || model?.provider
-            : undefined;
-        const modelId =
-          typeof model === "string" ? model : model?.id || model?.modelID;
-
-        const isCandela =
-          (typeof providerId === "string" &&
-            (providerId.startsWith("candela-") ||
-              providerId.includes("candela"))) ||
-          (typeof baseURL === "string" && baseURL.includes(candelaUrl)) ||
-          (typeof modelProvider === "string" &&
-            (modelProvider.startsWith("candela-") ||
-              modelProvider.includes("candela"))) ||
-          (typeof modelId === "string" &&
-            (modelId.startsWith("candela-") || modelId.includes("candela/")));
-
-        if (!isCandela) {
-          return;
-        }
+      if (!isCandelaRequest(input, candelaUrl)) {
+        return;
       }
 
       output.headers["X-Session-Id"] = sessionId;
