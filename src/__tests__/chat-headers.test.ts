@@ -1,5 +1,70 @@
 import { describe, expect, it } from "vitest";
-import { isCandelaRequest } from "../index.js";
+import { isCandelaRequest, matchesOrigin } from "../index.js";
+
+describe("matchesOrigin", () => {
+  it("matches identical origins", () => {
+    expect(
+      matchesOrigin("http://127.0.0.1:8181/v1", "http://127.0.0.1:8181"),
+    ).toBe(true);
+    expect(
+      matchesOrigin(
+        "https://candela.corp.internal/v1",
+        "https://candela.corp.internal",
+      ),
+    ).toBe(true);
+  });
+
+  it("treats localhost and 127.0.0.1 on the same port as equivalent loopback origins", () => {
+    expect(
+      matchesOrigin("http://localhost:8181/v1", "http://127.0.0.1:8181"),
+    ).toBe(true);
+    expect(
+      matchesOrigin("http://127.0.0.1:8181/v1", "http://localhost:8181"),
+    ).toBe(true);
+  });
+
+  it("rejects different ports on loopback", () => {
+    expect(
+      matchesOrigin("http://localhost:3000/v1", "http://localhost:8181"),
+    ).toBe(false);
+    expect(
+      matchesOrigin("http://127.0.0.1:8080/v1", "http://127.0.0.1:8181"),
+    ).toBe(false);
+  });
+
+  it("rejects malicious URLs containing target URL as query, path, or subdomain", () => {
+    expect(
+      matchesOrigin(
+        "http://attacker.com/?target=http://127.0.0.1:8181",
+        "http://127.0.0.1:8181",
+      ),
+    ).toBe(false);
+    expect(
+      matchesOrigin(
+        "http://127.0.0.1:8181.attacker.com/v1",
+        "http://127.0.0.1:8181",
+      ),
+    ).toBe(false);
+    expect(
+      matchesOrigin(
+        "http://attacker.com/127.0.0.1:8181",
+        "http://127.0.0.1:8181",
+      ),
+    ).toBe(false);
+    expect(
+      matchesOrigin(
+        "http://user:pass@attacker.com:8181",
+        "http://127.0.0.1:8181",
+      ),
+    ).toBe(false);
+  });
+
+  it("safely handles null, undefined, or malformed URLs", () => {
+    expect(matchesOrigin(undefined, "http://127.0.0.1:8181")).toBe(false);
+    expect(matchesOrigin("not-a-url", "http://127.0.0.1:8181")).toBe(false);
+    expect(matchesOrigin("http://127.0.0.1:8181", "not-a-url")).toBe(false);
+  });
+});
 
 describe("isCandelaRequest", () => {
   const candelaUrl = "http://127.0.0.1:8181";
@@ -38,6 +103,34 @@ describe("isCandelaRequest", () => {
     ).toBe(false);
   });
 
+  it("returns false for attacker URL trying to trick substring match", () => {
+    expect(
+      isCandelaRequest(
+        {
+          provider: {
+            id: "third-party",
+            baseURL: "http://attacker.com/?candela=http://127.0.0.1:8181",
+          },
+          model: "gpt-4o",
+        },
+        candelaUrl,
+      ),
+    ).toBe(false);
+
+    expect(
+      isCandelaRequest(
+        {
+          provider: {
+            id: "third-party",
+            baseURL: "http://127.0.0.1:8181.attacker.com/v1",
+          },
+          model: "gpt-4o",
+        },
+        candelaUrl,
+      ),
+    ).toBe(false);
+  });
+
   it("returns true when provider ID indicates Candela", () => {
     expect(
       isCandelaRequest(
@@ -59,13 +152,26 @@ describe("isCandelaRequest", () => {
     ).toBe(true);
   });
 
-  it("returns true when baseURL matches Candela proxy URL", () => {
+  it("returns true when baseURL matches Candela proxy URL origin", () => {
     expect(
       isCandelaRequest(
         {
           provider: {
             id: "custom",
             baseURL: `${candelaUrl}/proxy/openai/v1`,
+          },
+        },
+        candelaUrl,
+      ),
+    ).toBe(true);
+
+    // Also supports localhost when candelaUrl is 127.0.0.1
+    expect(
+      isCandelaRequest(
+        {
+          provider: {
+            id: "custom",
+            baseURL: "http://localhost:8181/v1",
           },
         },
         candelaUrl,
