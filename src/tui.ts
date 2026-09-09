@@ -13,9 +13,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 import {
+  getHourlySpendTrend,
   getSessionHistory,
   getTimeOfDayPatterns,
   getToolCostBreakdown,
+  renderSparklineFromPoints,
 } from "./analytics-reader.js";
 import { CandelaClient } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
@@ -55,6 +57,13 @@ export const tui: TuiPlugin = async (api) => {
   let prevInputTokens: number | null = null;
   /** 24h input token count from last refresh — avoids extra API call */
   let lastInputTokens24h = 0;
+
+  /** 8-bucket sparkline for status bar */
+  let sparkline8 = "";
+  /** 12-bucket sparkline for sidebar */
+  let sparkline12 = "";
+  /** Peak spend information */
+  let peakSpendLabel: string | null = null;
 
   // Per-response cost/call delta tracking — accumulated on each session.idle
   let prevTotalCost: number | null = null;
@@ -113,6 +122,23 @@ export const tui: TuiPlugin = async (api) => {
           cacheHitRate = null;
         }
       }
+
+      // Update sparkline telemetry
+      if (data.costOverTime && data.costOverTime.length > 0) {
+        sparkline8 = renderSparklineFromPoints(data.costOverTime, 8);
+        sparkline12 = renderSparklineFromPoints(data.costOverTime, 12);
+        const maxVal = Math.max(...data.costOverTime.map((p) => p.value));
+        peakSpendLabel = maxVal > 0 ? `Peak: ${formatCost(maxVal)}/hr` : null;
+      } else {
+        const trend8 = getHourlySpendTrend(24, 8, sessionCostUsd);
+        const trend12 = getHourlySpendTrend(24, 12, sessionCostUsd);
+        sparkline8 = trend8.sparkline;
+        sparkline12 = trend12.sparkline;
+        peakSpendLabel =
+          trend12.peakCost > 0
+            ? `Peak: ${formatCost(trend12.peakCost)}/hr${trend12.peakTimeLabel ? ` @ ${trend12.peakTimeLabel}` : ""}`
+            : null;
+      }
     } catch {
       // Non-fatal — stale data is better than no data
     }
@@ -141,6 +167,13 @@ export const tui: TuiPlugin = async (api) => {
             ? "Budget: unavailable"
             : `${budgetEmoji} Budget: ${budgetPct}% used · ${formatCost(budgetRemaining)} left`;
         const costLine = `💰 24h spend: ${formatCost(totalCost24h)}`;
+
+        const trendLine: string[] = [];
+        if (sparkline12) {
+          trendLine.push(
+            `📈 Trend:  ${sparkline12}  ${formatCost(totalCost24h)}${peakSpendLabel ? ` (${peakSpendLabel})` : ""}`,
+          );
+        }
 
         const modelLines = topModels.length
           ? [
@@ -238,6 +271,7 @@ export const tui: TuiPlugin = async (api) => {
         return [
           budgetLine,
           costLine,
+          ...trendLine,
           ...cacheLine,
           ...tagLine,
           ...activityLine,
@@ -284,7 +318,8 @@ export const tui: TuiPlugin = async (api) => {
       status_bar: () => {
         refresh();
         const parts: string[] = [];
-        parts.push(`🕯️ ${formatCost(totalCost24h)} 24h`);
+        const spark = sparkline8 ? `${sparkline8} ` : "";
+        parts.push(`🕯️ ${spark}${formatCost(totalCost24h)} 24h`);
         if (lastResponseCost !== null && lastResponseCost > 0) {
           parts.push(`↳${formatCost(lastResponseCost)}`);
         }
@@ -411,10 +446,12 @@ export const tui: TuiPlugin = async (api) => {
         },
         onSelect: async () => {
           await refresh();
-          // Inject a user message that triggers the cost summary tool
+          const trendPart = sparkline8
+            ? `\nTrend: ${sparkline8}${peakSpendLabel ? ` · ${peakSpendLabel}` : ""}`
+            : "";
           api.ui.toast({
             title: "💰 Cost Summary",
-            message: `Today: ${formatCost(totalCost24h)} · Session: ${formatCost(sessionCostUsd)} (${sessionCalls} calls)`,
+            message: `Today: ${formatCost(totalCost24h)} · Session: ${formatCost(sessionCostUsd)} (${sessionCalls} calls)${trendPart}`,
             variant: "info",
           });
         },

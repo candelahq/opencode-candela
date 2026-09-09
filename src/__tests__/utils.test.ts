@@ -5,6 +5,8 @@ import {
   formatDuration,
   formatTokens,
   parseJsonc,
+  renderSparkline,
+  SPARK_CHARS,
 } from "../utils.js";
 
 // ── formatCost ────────────────────────────────────────────────────────────────
@@ -213,5 +215,52 @@ describe("parseJsonc", () => {
     ) as Record<string, unknown>;
     expect(result.protocol).toBe("https://example.com");
     expect(result.note).toBe("see // docs");
+  });
+});
+
+// ── renderSparkline ───────────────────────────────────────────────────────────
+
+describe("renderSparkline", () => {
+  it("renders flat baseline when all values are zero", () => {
+    const spark = renderSparkline([0, 0, 0, 0], 4);
+    expect(spark).toBe(SPARK_CHARS[0].repeat(4));
+  });
+
+  it("handles empty array with default and custom widths", () => {
+    expect(renderSparkline([])).toBe("");
+    expect(renderSparkline([], 8)).toBe(SPARK_CHARS[0].repeat(8));
+  });
+
+  it("returns empty string when width <= 0", () => {
+    expect(renderSparkline([1, 2, 3], 0)).toBe("");
+  });
+
+  it("scales values proportionally to 8 unicode levels", () => {
+    // 0 should map to lowest level, max should map to highest (full block █)
+    const spark = renderSparkline([0, 10]);
+    expect(spark[0]).toBe(SPARK_CHARS[0]);
+    expect(spark[1]).toBe(SPARK_CHARS[7]); // "█"
+  });
+
+  it("pads with zeros on the left when values.length < width", () => {
+    const spark = renderSparkline([10], 4);
+    expect(spark.length).toBe(4);
+    expect(spark[0]).toBe(SPARK_CHARS[0]);
+    expect(spark[1]).toBe(SPARK_CHARS[0]);
+    expect(spark[2]).toBe(SPARK_CHARS[0]);
+    expect(spark[3]).toBe(SPARK_CHARS[7]); // "█"
+  });
+
+  it("slices from the end when values.length > width", () => {
+    const spark = renderSparkline([100, 0, 10], 2);
+    expect(spark.length).toBe(2);
+    expect(spark[0]).toBe(SPARK_CHARS[0]);
+    expect(spark[1]).toBe(SPARK_CHARS[7]);
+  });
+
+  it("clamps negative numbers to zero baseline", () => {
+    const spark = renderSparkline([-5, 10]);
+    expect(spark[0]).toBe(SPARK_CHARS[0]);
+    expect(spark[1]).toBe(SPARK_CHARS[7]);
   });
 });
