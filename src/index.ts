@@ -116,6 +116,107 @@ function formatGrant(g: GrantInfo): string {
   return parts.join("");
 }
 
+/**
+ * Compare two URLs for origin equality (protocol, hostname, port),
+ * treating localhost and 127.0.0.1 on the same port as equivalent loopback origins.
+ * Prevents URL substring confusion attacks (e.g. attacker.com/?target=http://localhost:8181).
+ */
+export function matchesOrigin(urlA?: string, urlB?: string): boolean {
+  if (!urlA || !urlB) return false;
+  try {
+    const parsedA = new URL(urlA);
+    const parsedB = new URL(urlB);
+    if (parsedA.origin === parsedB.origin) {
+      return true;
+    }
+    const isLocalA =
+      parsedA.hostname === "localhost" || parsedA.hostname === "127.0.0.1";
+    const isLocalB =
+      parsedB.hostname === "localhost" || parsedB.hostname === "127.0.0.1";
+    const portA =
+      parsedA.port || (parsedA.protocol === "https:" ? "443" : "80");
+    const portB =
+      parsedB.port || (parsedB.protocol === "https:" ? "443" : "80");
+    return (
+      isLocalA &&
+      isLocalB &&
+      parsedA.protocol === parsedB.protocol &&
+      portA === portB
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Determine whether an outgoing LLM request targets a Candela provider or proxy.
+ * Prevents leaking internal mission, job, task, and git details to direct third-party providers (CWE-200).
+ */
+export function isCandelaRequest(
+  input:
+    | {
+        provider?:
+          | string
+          | {
+              id?: string;
+              name?: string;
+              baseURL?: string;
+              baseUrl?: string;
+              options?: { baseURL?: string };
+              info?: { id?: string; baseURL?: string };
+            };
+        model?:
+          | string
+          | {
+              id?: string;
+              modelID?: string;
+              provider?: string;
+              providerID?: string;
+            };
+      }
+    | null
+    | undefined,
+  candelaUrl: string,
+): boolean {
+  if (!input) return false;
+  const provider = input.provider;
+  const model = input.model;
+  if (!provider && !model) return false;
+
+  const providerId =
+    typeof provider === "string"
+      ? provider
+      : provider?.id || provider?.info?.id || provider?.name;
+  const baseURL =
+    typeof provider === "object" && provider !== null
+      ? provider.baseURL ||
+        provider.baseUrl ||
+        provider.options?.baseURL ||
+        provider.info?.baseURL
+      : undefined;
+  const modelProvider =
+    typeof model === "object" && model !== null
+      ? model.providerID || model.provider
+      : undefined;
+  const modelId =
+    typeof model === "string"
+      ? model
+      : typeof model === "object" && model !== null
+        ? model.id || model.modelID
+        : undefined;
+
+  return Boolean(
+    (typeof providerId === "string" &&
+      (providerId.startsWith("candela-") || providerId.includes("candela"))) ||
+      (typeof baseURL === "string" && matchesOrigin(baseURL, candelaUrl)) ||
+      (typeof modelProvider === "string" &&
+        (modelProvider.startsWith("candela-") ||
+          modelProvider.includes("candela"))) ||
+      (typeof modelId === "string" &&
+        (modelId.startsWith("candela-") || modelId.includes("candela/"))),
+  );
+}
+
 export const CandelaPlugin: Plugin = async ({ client, $ }) => {
   const candelaUrl = discoverCandelaUrl();
   const candela = new CandelaClient(candelaUrl);
@@ -265,8 +366,15 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       }
     },
 
-    "chat.headers": async (_input, output) => {
+    "chat.headers": async (input, output) => {
       if (!alive || !sessionId) return;
+
+      // Only attach Candela tracing headers when routing through the Candela proxy.
+      // Prevents leaking internal mission, job, task, and git details to direct third-party providers (CWE-200).
+      if (!isCandelaRequest(input, candelaUrl)) {
+        return;
+      }
+
       output.headers["X-Session-Id"] = sessionId;
       if (activeTaskId) {
         output.headers["X-Task-Id"] = activeTaskId;
@@ -290,6 +398,11 @@ export const CandelaPlugin: Plugin = async ({ client, $ }) => {
       const tag = resolveSettings().sessionTag;
       if (tag) {
         output.headers["X-Session-Tag"] = tag;
+      }
+      const missionId = process.env.CANDELA_MISSION_ID;
+      if (missionId) {
+        output.headers["X-Mission-Id"] = missionId;
+        output.headers["X-Candela-Job-Id"] = missionId;
       }
     },
 
