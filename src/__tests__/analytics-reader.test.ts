@@ -639,6 +639,25 @@ describe("analytics-reader", () => {
       expect(trend.peakTimeLabel).not.toBeNull();
       expect(trend.sparkline.length).toBe(8);
     });
+
+    it("increments newest bucket sessionCount for active uncommitted session", () => {
+      mockExists.mockReturnValue(true);
+      const now = Date.now();
+      const justNow = new Date(now - 60000).toISOString();
+      const lines = [
+        JSON.stringify({
+          ts: justNow,
+          sessionId: "persisted-1",
+          totalCost: 1.0,
+        }),
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const trend = getHourlySpendTrend(24, 8, 0.5);
+      // Newest bucket had 1 persisted session, plus active session -> 2
+      expect(trend.hourlyBuckets[7].sessionCount).toBe(2);
+      expect(trend.hourlyBuckets[7].cost).toBeCloseTo(1.5);
+    });
   });
 
   describe("renderSparklineFromPoints", () => {

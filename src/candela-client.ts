@@ -656,7 +656,16 @@ export class CandelaClient {
         }
       }
 
-      return { usage, models: [], budget, activeGrants, totalRemainingUsd };
+      return {
+        usage,
+        models: [],
+        budget,
+        activeGrants,
+        totalRemainingUsd,
+        ...(usage.costOverTime?.length
+          ? { costOverTime: usage.costOverTime }
+          : {}),
+      };
     } catch {
       return null;
     }

@@ -712,9 +712,7 @@ export function getHourlySpendTrend(
   // Include active uncommitted session cost into the latest bucket
   if (currentSessionCost > 0) {
     buckets[bucketCount - 1] += currentSessionCost;
-    if (sessionCounts[bucketCount - 1] === 0) {
-      sessionCounts[bucketCount - 1] = 1;
-    }
+    sessionCounts[bucketCount - 1]++;
   }
 
   const hourlyBuckets: HourlySpendBucket[] = [];
