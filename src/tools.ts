@@ -13,6 +13,10 @@
  */
 
 import { tool } from "@opencode-ai/plugin";
+import {
+  getHourlySpendTrend,
+  renderSparklineFromPoints,
+} from "./analytics-reader.js";
 import type { CandelaClient } from "./candela-client.js";
 import { makeTimeRange, makeTimeRangeFromDate } from "./candela-client.js";
 import {
@@ -31,6 +35,7 @@ import {
   formatCost,
   formatDuration,
   formatTokens,
+  renderSparkline,
 } from "./utils.js";
 
 function formatForecastTime(hoursUntilExhaustion: number): string {
@@ -376,6 +381,14 @@ export function createCandelaTools(
           `| Cost/Call | ${formatCost(totalCost / traces.length)} |`,
         ];
 
+        if (traces.length >= 2) {
+          const sessionSpark = renderSparkline(
+            traces.map((t) => t.costUsd),
+            Math.min(12, traces.length),
+          );
+          outLines.push(`| Cost Trend | \`${sessionSpark}\` |`);
+        }
+
         if (totalCacheRead > 0 && totalInput > 0) {
           const hitRate = Math.min(
             100,
@@ -469,12 +482,18 @@ export function createCandelaTools(
         );
       }
 
+      const spark =
+        data.costOverTime && data.costOverTime.length > 0
+          ? renderSparklineFromPoints(data.costOverTime, 8)
+          : getHourlySpendTrend(hours, 8).sparkline;
+
       const outLines = [
         `## Cost Summary (last ${hours}h)`,
         "",
         `| Metric | Value |`,
         `|--------|-------|`,
         `| Total Cost | ${formatCost(usage.totalCostUsd)} |`,
+        `| Spend Trend | \`${spark}\` |`,
         `| Total Tokens | ${formatTokens(usage.totalTokens)} (${formatTokens(usage.inputTokens)} in / ${formatTokens(usage.outputTokens)} out) |`,
         `| LLM Calls | ${usage.requestCount} |`,
         `| Avg Cost/Call | ${formatCost(usage.totalCostUsd / usage.requestCount)} |`,

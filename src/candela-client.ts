@@ -12,12 +12,18 @@
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface TimeSeriesPoint {
+  timestamp: string;
+  value: number;
+}
+
 export interface UsageSummary {
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
   totalCostUsd: number;
   requestCount: number;
+  costOverTime?: TimeSeriesPoint[];
 }
 
 export interface ModelUsage {
@@ -74,6 +80,8 @@ export interface DashboardData {
   activeGrants: GrantInfo[];
   /** Server-computed total: grants + budget remaining. */
   totalRemainingUsd: number | null;
+  /** Time series of cost over time, if returned by backend. */
+  costOverTime?: TimeSeriesPoint[];
 }
 
 /** A model in the Candela catalog with pricing and metadata. */
@@ -220,8 +228,23 @@ function parseModels(raw: unknown[]): ModelUsage[] {
     }));
 }
 
+/** Parse raw proto3 JSON time series points. */
+function parseTimeSeries(raw: unknown): TimeSeriesPoint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (p): p is Record<string, unknown> => p != null && typeof p === "object",
+    )
+    .map((p) => ({
+      timestamp: String(p.timestamp ?? ""),
+      value: Number(p.value ?? 0),
+    }))
+    .filter((p) => Number.isFinite(p.value));
+}
+
 /** Parse raw proto3 JSON usage summary into UsageSummary. */
 function parseUsageSummary(s: Record<string, unknown>): UsageSummary {
+  const costOverTime = parseTimeSeries(s.costOverTime ?? s.cost_over_time);
   return {
     totalTokens:
       Number(s.totalInputTokens ?? s.total_input_tokens ?? 0) +
@@ -230,6 +253,7 @@ function parseUsageSummary(s: Record<string, unknown>): UsageSummary {
     outputTokens: Number(s.totalOutputTokens ?? s.total_output_tokens ?? 0),
     totalCostUsd: Number(s.totalCostUsd ?? s.total_cost_usd ?? 0),
     requestCount: Number(s.totalLlmCalls ?? s.total_llm_calls ?? 0),
+    ...(costOverTime.length > 0 ? { costOverTime } : {}),
   };
 }
 
@@ -560,7 +584,18 @@ export class CandelaClient {
         }
       }
 
-      return { usage, models, budget, activeGrants, totalRemainingUsd };
+      const costOverTime =
+        usage.costOverTime ??
+        parseTimeSeries(data.costOverTime ?? data.cost_over_time);
+
+      return {
+        usage,
+        models,
+        budget,
+        activeGrants,
+        totalRemainingUsd,
+        ...(costOverTime.length > 0 ? { costOverTime } : {}),
+      };
     } catch {
       return null;
     }

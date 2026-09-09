@@ -50,6 +50,49 @@ export function budgetBar(fraction: number, width = 20): string {
   return `🟢 [${bar}]`;
 }
 
+/** 8-level Unicode sparkline block characters from lowest to highest. */
+export const SPARK_CHARS = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as const;
+
+/**
+ * Render an array of numeric values as a Unicode sparkline string.
+ *
+ * @param values Array of numbers (e.g., hourly cost or token counts)
+ * @param width Desired character width (defaults to values.length, padded or sliced from the end)
+ * @returns Monospaced Unicode sparkline string
+ */
+export function renderSparkline(values: number[], width?: number): string {
+  const targetWidth = width ?? values.length;
+  if (targetWidth <= 0) return "";
+  if (values.length === 0) return SPARK_CHARS[0].repeat(targetWidth);
+
+  let slice: number[];
+  if (values.length >= targetWidth) {
+    slice = values.slice(-targetWidth);
+  } else {
+    slice = Array(targetWidth - values.length)
+      .fill(0)
+      .concat(values);
+  }
+
+  const max = Math.max(...slice, 0);
+  if (max === 0) {
+    return SPARK_CHARS[0].repeat(targetWidth);
+  }
+
+  return slice
+    .map((v) => {
+      const val = Math.max(0, v);
+      if (val === 0) return SPARK_CHARS[0];
+      const ratio = val / max;
+      const idx = Math.min(
+        SPARK_CHARS.length - 1,
+        Math.max(1, Math.round(ratio * (SPARK_CHARS.length - 1))),
+      );
+      return SPARK_CHARS[idx];
+    })
+    .join("");
+}
+
 // ── JSONC Config I/O ──────────────────────────────────────────────────────────
 
 /**

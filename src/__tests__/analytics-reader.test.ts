@@ -3,6 +3,7 @@ import {
   _resetRotationFlag,
   detectCostAnomaly,
   getCumulativeCost,
+  getHourlySpendTrend,
   getSessionCount,
   getSessionHistory,
   getTimeOfDayPatterns,
@@ -11,6 +12,7 @@ import {
   readCostStreaks,
   readSpendTrends,
   readWeeklyDigest,
+  renderSparklineFromPoints,
 } from "../analytics-reader.js";
 
 // Mock node:fs to control the analytics file contents
@@ -605,6 +607,55 @@ describe("analytics-reader", () => {
       // s1: 5/10 * $10 = $5, s2: 8/10 * $20 = $16 → total = $21
       expect(fileEdit?.estimatedTotalCost).toBeCloseTo(21.0);
       expect(fileEdit?.totalCalls).toBe(13);
+    });
+  });
+
+  describe("getHourlySpendTrend", () => {
+    it("returns empty baseline sparkline when no entries exist", () => {
+      mockExists.mockReturnValue(false);
+      const trend = getHourlySpendTrend(24, 8);
+      expect(trend.buckets).toHaveLength(8);
+      expect(trend.buckets.every((b) => b === 0)).toBe(true);
+      expect(trend.totalCost).toBe(0);
+      expect(trend.peakCost).toBe(0);
+      expect(trend.peakTimeLabel).toBeNull();
+      expect(trend.sparkline.length).toBe(8);
+    });
+
+    it("buckets entries within the last 24 hours and includes active session cost", () => {
+      mockExists.mockReturnValue(true);
+      const now = Date.now();
+      const oneHourAgo = new Date(now - 3600000).toISOString();
+      const twoHoursAgo = new Date(now - 7200000).toISOString();
+      const lines = [
+        JSON.stringify({ ts: twoHoursAgo, sessionId: "s1", totalCost: 1.5 }),
+        JSON.stringify({ ts: oneHourAgo, sessionId: "s2", totalCost: 3.0 }),
+      ];
+      mockRead.mockReturnValue(lines.join("\n"));
+
+      const trend = getHourlySpendTrend(24, 8, 0.5);
+      expect(trend.totalCost).toBeCloseTo(5.0); // 1.5 + 3.0 + 0.5
+      expect(trend.peakCost).toBeGreaterThan(0);
+      expect(trend.peakTimeLabel).not.toBeNull();
+      expect(trend.sparkline.length).toBe(8);
+    });
+  });
+
+  describe("renderSparklineFromPoints", () => {
+    it("renders sparkline from TimeSeriesPoint array", () => {
+      const points = [
+        { timestamp: "2026-09-09T10:00:00Z", value: 0 },
+        { timestamp: "2026-09-09T11:00:00Z", value: 5 },
+        { timestamp: "2026-09-09T12:00:00Z", value: 10 },
+      ];
+      const spark = renderSparklineFromPoints(points, 3);
+      expect(spark.length).toBe(3);
+      expect(spark[2]).toBe("█");
+    });
+
+    it("handles undefined or empty points array", () => {
+      expect(renderSparklineFromPoints(undefined, 8).length).toBe(8);
+      expect(renderSparklineFromPoints([], 8).length).toBe(8);
     });
   });
 });

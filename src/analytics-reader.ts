@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { renderSparkline } from "./utils.js";
 
 const ANALYTICS_PATH = join(
   homedir(),
@@ -647,4 +648,123 @@ export function getToolCostBreakdown(limit = 10): ToolCostEntry[] | null {
     }))
     .sort((a, b) => b.estimatedTotalCost - a.estimatedTotalCost)
     .slice(0, limit);
+}
+
+// ── Hourly Spend Trend & Sparklines ──────────────────────────────────────────
+
+export interface HourlySpendBucket {
+  /** Label for this bucket (e.g. "2:00 PM") */
+  timeLabel: string;
+  /** Total cost spent in this bucket */
+  cost: number;
+  /** Number of sessions in this bucket */
+  sessionCount: number;
+}
+
+export interface HourlySpendTrend {
+  /** Array of costs per bucket (ordered oldest to newest) */
+  buckets: number[];
+  /** Detailed bucket breakdown */
+  hourlyBuckets: HourlySpendBucket[];
+  /** 8-level Unicode sparkline string representation */
+  sparkline: string;
+  /** Total cost across all buckets in the window */
+  totalCost: number;
+  /** Peak cost in any single bucket */
+  peakCost: number;
+  /** Label of the peak bucket, or null if no spend */
+  peakTimeLabel: string | null;
+}
+
+/**
+ * Compute spend trends bucketed over a recent time window (default 24h).
+ *
+ * @param hours Total window in hours (default: 24)
+ * @param bucketCount Number of buckets to split the window into (default: 8)
+ * @param currentSessionCost Optional uncommitted cost from the active session to include in newest bucket
+ */
+export function getHourlySpendTrend(
+  hours = 24,
+  bucketCount = 8,
+  currentSessionCost = 0,
+): HourlySpendTrend {
+  const entries = parseUniqueEntries();
+  const now = Date.now();
+  const windowMs = hours * 3_600_000;
+  const windowStartMs = now - windowMs;
+  const bucketDurationMs = windowMs / bucketCount;
+
+  const buckets: number[] = Array(bucketCount).fill(0);
+  const sessionCounts: number[] = Array(bucketCount).fill(0);
+
+  for (const e of entries) {
+    const tsMs = new Date(e.ts).getTime();
+    if (Number.isFinite(tsMs) && tsMs >= windowStartMs && tsMs <= now) {
+      const idx = Math.min(
+        bucketCount - 1,
+        Math.max(0, Math.floor((tsMs - windowStartMs) / bucketDurationMs)),
+      );
+      buckets[idx] += e.totalCost;
+      sessionCounts[idx]++;
+    }
+  }
+
+  // Include active uncommitted session cost into the latest bucket
+  if (currentSessionCost > 0) {
+    buckets[bucketCount - 1] += currentSessionCost;
+    if (sessionCounts[bucketCount - 1] === 0) {
+      sessionCounts[bucketCount - 1] = 1;
+    }
+  }
+
+  const hourlyBuckets: HourlySpendBucket[] = [];
+  let peakCost = 0;
+  let peakIdx = -1;
+
+  for (let i = 0; i < bucketCount; i++) {
+    const bucketTime = new Date(windowStartMs + i * bucketDurationMs);
+    const timeLabel = bucketTime.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    hourlyBuckets.push({
+      timeLabel,
+      cost: buckets[i],
+      sessionCount: sessionCounts[i],
+    });
+
+    if (buckets[i] > peakCost) {
+      peakCost = buckets[i];
+      peakIdx = i;
+    }
+  }
+
+  const totalCost = buckets.reduce((sum, c) => sum + c, 0);
+  const sparkline = renderSparkline(buckets, bucketCount);
+  const peakTimeLabel =
+    peakIdx >= 0 && peakCost > 0 ? hourlyBuckets[peakIdx].timeLabel : null;
+
+  return {
+    buckets,
+    hourlyBuckets,
+    sparkline,
+    totalCost,
+    peakCost,
+    peakTimeLabel,
+  };
+}
+
+/**
+ * Render a sparkline from Candela server TimeSeriesPoint array.
+ */
+export function renderSparklineFromPoints(
+  points: Array<{ timestamp: string; value: number }> | undefined,
+  width = 8,
+): string {
+  if (!points || points.length === 0) return renderSparkline([], width);
+  return renderSparkline(
+    points.map((p) => p.value),
+    width,
+  );
 }
