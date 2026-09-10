@@ -263,4 +263,11 @@ describe("renderSparkline", () => {
     expect(spark[0]).toBe(SPARK_CHARS[0]);
     expect(spark[1]).toBe(SPARK_CHARS[7]);
   });
+
+  it("handles NaN and non-finite values safely without poisoning output", () => {
+    const spark = renderSparkline([NaN, 10], 2);
+    expect(spark.length).toBe(2);
+    expect(spark[0]).toBe(SPARK_CHARS[0]);
+    expect(spark[1]).toBe(SPARK_CHARS[7]);
+  });
 });

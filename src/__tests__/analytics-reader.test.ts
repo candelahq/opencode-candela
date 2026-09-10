@@ -658,6 +658,14 @@ describe("analytics-reader", () => {
       expect(trend.hourlyBuckets[7].sessionCount).toBe(2);
       expect(trend.hourlyBuckets[7].cost).toBeCloseTo(1.5);
     });
+
+    it("defensively clamps invalid parameters without throwing", () => {
+      mockExists.mockReturnValue(false);
+      const trend = getHourlySpendTrend(-5, -2, Number.NaN);
+      expect(trend.buckets).toHaveLength(1);
+      expect(trend.sparkline.length).toBe(1);
+      expect(trend.totalCost).toBe(0);
+    });
   });
 
   describe("renderSparklineFromPoints", () => {

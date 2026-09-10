@@ -688,20 +688,27 @@ export function getHourlySpendTrend(
   bucketCount = 8,
   currentSessionCost = 0,
 ): HourlySpendTrend {
+  const safeBucketCount = Math.max(1, Math.floor(bucketCount));
+  const safeHours = Math.max(0.1, hours);
+  const safeSessionCost =
+    Number.isFinite(currentSessionCost) && currentSessionCost > 0
+      ? currentSessionCost
+      : 0;
+
   const entries = parseUniqueEntries();
   const now = Date.now();
-  const windowMs = hours * 3_600_000;
+  const windowMs = safeHours * 3_600_000;
   const windowStartMs = now - windowMs;
-  const bucketDurationMs = windowMs / bucketCount;
+  const bucketDurationMs = windowMs / safeBucketCount;
 
-  const buckets: number[] = Array(bucketCount).fill(0);
-  const sessionCounts: number[] = Array(bucketCount).fill(0);
+  const buckets: number[] = Array(safeBucketCount).fill(0);
+  const sessionCounts: number[] = Array(safeBucketCount).fill(0);
 
   for (const e of entries) {
     const tsMs = new Date(e.ts).getTime();
     if (Number.isFinite(tsMs) && tsMs >= windowStartMs && tsMs <= now) {
       const idx = Math.min(
-        bucketCount - 1,
+        safeBucketCount - 1,
         Math.max(0, Math.floor((tsMs - windowStartMs) / bucketDurationMs)),
       );
       buckets[idx] += e.totalCost;
@@ -710,16 +717,16 @@ export function getHourlySpendTrend(
   }
 
   // Include active uncommitted session cost into the latest bucket
-  if (currentSessionCost > 0) {
-    buckets[bucketCount - 1] += currentSessionCost;
-    sessionCounts[bucketCount - 1]++;
+  if (safeSessionCost > 0) {
+    buckets[safeBucketCount - 1] += safeSessionCost;
+    sessionCounts[safeBucketCount - 1]++;
   }
 
   const hourlyBuckets: HourlySpendBucket[] = [];
   let peakCost = 0;
   let peakIdx = -1;
 
-  for (let i = 0; i < bucketCount; i++) {
+  for (let i = 0; i < safeBucketCount; i++) {
     const bucketTime = new Date(windowStartMs + i * bucketDurationMs);
     const timeLabel = bucketTime.toLocaleTimeString("en-US", {
       hour: "numeric",
@@ -739,7 +746,7 @@ export function getHourlySpendTrend(
   }
 
   const totalCost = buckets.reduce((sum, c) => sum + c, 0);
-  const sparkline = renderSparkline(buckets, bucketCount);
+  const sparkline = renderSparkline(buckets, safeBucketCount);
   const peakTimeLabel =
     peakIdx >= 0 && peakCost > 0 ? hourlyBuckets[peakIdx].timeLabel : null;
 
