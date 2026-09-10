@@ -19,7 +19,7 @@ import {
   getToolCostBreakdown,
   renderSparklineFromPoints,
 } from "./analytics-reader.js";
-import { CandelaClient } from "./candela-client.js";
+import { CandelaClient, type TimeSeriesPoint } from "./candela-client.js";
 import { discoverCandelaUrl } from "./discover.js";
 import {
   resolveSettings,
@@ -64,6 +64,30 @@ export const tui: TuiPlugin = async (api) => {
   let sparkline12 = "";
   /** Peak spend information */
   let peakSpendLabel: string | null = null;
+  /** Cached time series points from backend */
+  let lastCostOverTime: TimeSeriesPoint[] | undefined;
+
+  function updateSparklines(costOverTime?: TimeSeriesPoint[]) {
+    if (costOverTime !== undefined) {
+      lastCostOverTime = costOverTime;
+    }
+    const points = lastCostOverTime;
+    if (points && points.length > 0) {
+      sparkline8 = renderSparklineFromPoints(points, 8);
+      sparkline12 = renderSparklineFromPoints(points, 12);
+      const maxVal = Math.max(...points.map((p) => p.value));
+      peakSpendLabel = maxVal > 0 ? `Peak: ${formatCost(maxVal)}/hr` : null;
+    } else {
+      const trend8 = getHourlySpendTrend(24, 8, sessionCostUsd);
+      const trend12 = getHourlySpendTrend(24, 12, sessionCostUsd);
+      sparkline8 = trend8.sparkline;
+      sparkline12 = trend12.sparkline;
+      peakSpendLabel =
+        trend12.peakCost > 0
+          ? `Peak: ${formatCost(trend12.peakCost)}/hr${trend12.peakTimeLabel ? ` @ ${trend12.peakTimeLabel}` : ""}`
+          : null;
+    }
+  }
 
   // Per-response cost/call delta tracking — accumulated on each session.idle
   let prevTotalCost: number | null = null;
@@ -124,21 +148,7 @@ export const tui: TuiPlugin = async (api) => {
       }
 
       // Update sparkline telemetry
-      if (data.costOverTime && data.costOverTime.length > 0) {
-        sparkline8 = renderSparklineFromPoints(data.costOverTime, 8);
-        sparkline12 = renderSparklineFromPoints(data.costOverTime, 12);
-        const maxVal = Math.max(...data.costOverTime.map((p) => p.value));
-        peakSpendLabel = maxVal > 0 ? `Peak: ${formatCost(maxVal)}/hr` : null;
-      } else {
-        const trend8 = getHourlySpendTrend(24, 8, sessionCostUsd);
-        const trend12 = getHourlySpendTrend(24, 12, sessionCostUsd);
-        sparkline8 = trend8.sparkline;
-        sparkline12 = trend12.sparkline;
-        peakSpendLabel =
-          trend12.peakCost > 0
-            ? `Peak: ${formatCost(trend12.peakCost)}/hr${trend12.peakTimeLabel ? ` @ ${trend12.peakTimeLabel}` : ""}`
-            : null;
-      }
+      updateSparklines(data.costOverTime);
     } catch {
       // Non-fatal — stale data is better than no data
     }
@@ -168,8 +178,9 @@ export const tui: TuiPlugin = async (api) => {
             : `${budgetEmoji} Budget: ${budgetPct}% used · ${formatCost(budgetRemaining)} left`;
         const costLine = `💰 24h spend: ${formatCost(totalCost24h)}`;
 
+        const hasSpend = totalCost24h > 0 || sessionCostUsd > 0;
         const trendLine: string[] = [];
-        if (sparkline12) {
+        if (sparkline12 && hasSpend) {
           trendLine.push(
             `📈 Trend:  ${sparkline12}  ${formatCost(totalCost24h)}${peakSpendLabel ? ` (${peakSpendLabel})` : ""}`,
           );
@@ -318,7 +329,8 @@ export const tui: TuiPlugin = async (api) => {
       status_bar: () => {
         refresh();
         const parts: string[] = [];
-        const spark = sparkline8 ? `${sparkline8} ` : "";
+        const hasSpend = totalCost24h > 0 || sessionCostUsd > 0;
+        const spark = sparkline8 && hasSpend ? `${sparkline8} ` : "";
         parts.push(`🕯️ ${spark}${formatCost(totalCost24h)} 24h`);
         if (lastResponseCost !== null && lastResponseCost > 0) {
           parts.push(`↳${formatCost(lastResponseCost)}`);
@@ -349,6 +361,7 @@ export const tui: TuiPlugin = async (api) => {
       lastResponseCost = Math.max(0, totalCost24h - prevTotalCost);
       sessionCostUsd += lastResponseCost;
       sessionCalls++;
+      updateSparklines();
 
       // Track input token deltas for context gauge
       if (prevInputTokens !== null) {
@@ -446,9 +459,11 @@ export const tui: TuiPlugin = async (api) => {
         },
         onSelect: async () => {
           await refresh();
-          const trendPart = sparkline8
-            ? `\nTrend: ${sparkline8}${peakSpendLabel ? ` · ${peakSpendLabel}` : ""}`
-            : "";
+          const hasSpend = totalCost24h > 0 || sessionCostUsd > 0;
+          const trendPart =
+            sparkline8 && hasSpend
+              ? `\nTrend: ${sparkline8}${peakSpendLabel ? ` · ${peakSpendLabel}` : ""}`
+              : "";
           api.ui.toast({
             title: "💰 Cost Summary",
             message: `Today: ${formatCost(totalCost24h)} · Session: ${formatCost(sessionCostUsd)} (${sessionCalls} calls)${trendPart}`,

@@ -383,7 +383,7 @@ export function createCandelaTools(
 
         if (traces.length >= 2) {
           const sessionSpark = renderSparkline(
-            traces.map((t) => t.costUsd),
+            [...traces].reverse().map((t) => t.costUsd),
             Math.min(12, traces.length),
           );
           outLines.push(`| Cost Trend | \`${sessionSpark}\` |`);

@@ -74,14 +74,14 @@ export function renderSparkline(values: number[], width?: number): string {
       .concat(values);
   }
 
-  const max = Math.max(...slice, 0);
+  const sanitized = slice.map((v) => (Number.isFinite(v) ? Math.max(0, v) : 0));
+  const max = Math.max(...sanitized, 0);
   if (max === 0) {
     return SPARK_CHARS[0].repeat(targetWidth);
   }
 
-  return slice
-    .map((v) => {
-      const val = Math.max(0, v);
+  return sanitized
+    .map((val) => {
       if (val === 0) return SPARK_CHARS[0];
       const ratio = val / max;
       const idx = Math.min(
